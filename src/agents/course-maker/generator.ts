@@ -1,7 +1,7 @@
 import type OpenAI from "openai";
 import { env } from "../../config/env.js";
 import { ApiError } from "../../utils/apiError.js";
-import { getOpenAICompatClient } from "../llm.js";
+import { getOpenAICompatClient, reasoningParams } from "../llm.js";
 import { retrieveGroundingDetailed } from "../../rag/retriever.js";
 import { retrieveFreshness } from "../shared/freshness.js";
 import { buildCourseMakerSystemPrompt, buildCourseMakerUserMessage } from "./prompt.js";
@@ -69,6 +69,8 @@ export async function generateCoursePayload(
         model,
         messages,
         max_tokens: env.COURSE_MAX_OUTPUT_TOKENS,
+        // gpt-5.x rejects function tools unless reasoning is off — see llm.ts.
+        ...reasoningParams(model),
         tools: [emitCourseTool],
         tool_choice: { type: "function", function: { name: "emit_course" } },
       },

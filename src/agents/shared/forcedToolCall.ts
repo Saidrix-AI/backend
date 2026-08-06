@@ -2,6 +2,7 @@ import type OpenAI from "openai";
 import type { z } from "zod";
 import { env } from "../../config/env.js";
 import { ApiError } from "../../utils/apiError.js";
+import { reasoningParams } from "../llm.js";
 
 /**
  * Generic single-forced-tool-call runner with one repair round-trip — the LLM
@@ -86,6 +87,8 @@ export async function runForcedToolCall<T>(opts: ForcedToolCallOptions<T>): Prom
         model: opts.deps.model,
         messages,
         max_tokens: opts.maxTokens,
+        // gpt-5.x rejects function tools unless reasoning is off — see llm.ts.
+        ...reasoningParams(opts.deps.model),
         tools: [opts.tool],
         tool_choice: { type: "function", function: { name } },
       },

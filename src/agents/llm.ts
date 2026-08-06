@@ -43,6 +43,7 @@ export function getChatModel(): BaseChatModel {
       return new ChatOpenAI({
         model,
         apiKey: requireKey(env.OPENAI_API_KEY, "OPENAI_API_KEY"),
+        modelKwargs: reasoningParams(model),
       });
     case "google":
       return new ChatGoogleGenerativeAI({
@@ -57,6 +58,7 @@ export function getChatModel(): BaseChatModel {
         model,
         apiKey: compat.key(),
         configuration: { baseURL: compat.baseURL },
+        modelKwargs: reasoningParams(model),
       });
     }
   }
@@ -65,6 +67,34 @@ export function getChatModel(): BaseChatModel {
 /** The resolved model id for the active provider. */
 export function getModelName(): string {
   return env.LLM_MODEL ?? DEFAULT_MODELS[env.LLM_PROVIDER];
+}
+
+/**
+ * gpt-5.x refuses function tools on /v1/chat/completions unless reasoning is
+ * off: "Function tools with reasoning_effort are not supported ... use
+ * /v1/responses or set reasoning_effort to 'none'". Every agent here forces a
+ * tool call, so without this the whole generation stack 400s.
+ *
+ * Probed against TokenRouter 2026-08-06 with a forced tool call:
+ *   field absent -> 400   "minimal" -> 400 (unsupported value)   "none" -> 200
+ * OpenRouter routes gpt-5.x to the Responses API itself and works either way,
+ * so sending "none" there is a no-op, not a regression.
+ *
+ * Gated on the dotted gpt-5.N family on purpose: plain gpt-5 / gpt-5-mini
+ * reject "none" (their floor is "minimal"), and non-reasoning models such as
+ * gpt-4o-mini reject the field outright.
+ */
+const DOTTED_GPT5 = /(^|\/)gpt-5\.\d/i;
+
+/*
+ * Returns a spreadable body fragment, not a typed field: the openai SDK's
+ * `ReasoningEffort` still reads 'minimal' | 'low' | 'medium' | 'high' and has
+ * no 'none' or 'xhigh', so a precise type would not fit into the request
+ * params. Same escape hatch the `include_reasoning` spread in stream.ts uses.
+ */
+export function reasoningParams(model: string): Record<string, unknown> {
+  const effort = env.LLM_REASONING_EFFORT ?? (DOTTED_GPT5.test(model) ? "none" : undefined);
+  return effort ? { reasoning_effort: effort } : {};
 }
 
 /**

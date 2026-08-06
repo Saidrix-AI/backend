@@ -1,6 +1,6 @@
 import { SystemMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
 import type OpenAI from "openai";
-import { getChatModel, getOpenAICompatClient } from "../llm.js";
+import { getChatModel, getOpenAICompatClient, reasoningParams } from "../llm.js";
 import { WEB_SEARCH_TOOL_NAME, type SearchSource } from "../tools/web-search.js";
 import { SEARCH_COURSE_CONTENT_TOOL_NAME } from "../tools/course-content-search.js";
 import { buildToolset } from "../tools/registry.js";
@@ -221,6 +221,8 @@ export async function* streamChatAgent(
           : {}),
         // Ask OpenRouter to include reasoning tokens (non-standard field).
         ...({ include_reasoning: true } as Record<string, unknown>),
+        // gpt-5.x rejects function tools unless reasoning is off — see llm.ts.
+        ...reasoningParams(oai.model),
       },
       { signal: options.signal },
     );

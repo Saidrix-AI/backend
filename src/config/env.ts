@@ -88,6 +88,10 @@ const envSchema = z.object({
   // --- LLM providers ---
   LLM_PROVIDER: z.enum(["anthropic", "openai", "google", "openrouter", "tokenrouter"]).default("openrouter"),
   LLM_MODEL: z.string().optional(),
+  // Escape hatch for the reasoning-effort rule in agents/llm.ts. Leave unset:
+  // the default is derived from the model name. Set it when a new model needs a
+  // different value than the derivation picks (see reasoningParams there).
+  LLM_REASONING_EFFORT: z.enum(["none", "low", "medium", "high", "xhigh"]).optional(),
   // Per-LLM-call timeout for forced tool calls. Reasoning models (e.g.
   // z-ai/glm-5.2) think before answering and are far slower than instruct
   // models — 60s was enough for gpt-4o-mini but times out the lecture planner
