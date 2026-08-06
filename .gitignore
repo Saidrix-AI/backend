@@ -1,6 +1,11 @@
 node_modules/
 dist/
+# `.env` alone left every other variant tracked — .env.production, .env.local
+# and friends would have been committed on the first `git add .`, which for this
+# service means the database URI, the mail password and the billing keys.
 .env
+.env.*
+!.env.example
 *.log
 coverage/
 
