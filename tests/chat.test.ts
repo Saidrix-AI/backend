@@ -23,10 +23,11 @@ beforeAll(async () => {
 
   const res = await request(app).post("/api/auth/register").send({
     name: "Chat Tester",
+    username: "chattester",
     email: "chat@example.com",
     password: "supersecret123",
   });
-  token = res.body.data.token;
+  token = res.body.data.accessToken;
 });
 
 afterAll(async () => {
@@ -77,10 +78,11 @@ describe("chat", () => {
   it("404s for another user's conversation id", async () => {
     const other = await request(app).post("/api/auth/register").send({
       name: "Other",
+      username: "otheruser",
       email: "other@example.com",
       password: "supersecret123",
     });
-    const otherToken = other.body.data.token;
+    const otherToken = other.body.data.accessToken;
 
     const created = await request(app)
       .post("/api/chat")

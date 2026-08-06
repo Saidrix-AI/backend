@@ -1,0 +1,428 @@
+{
+  "id": "multi-agent-communication",
+  "version": 1,
+  "course": {
+    "title": "Autonomous Agent Engineering",
+    "breadcrumb": ["Autonomous Agent Engineering", "Chapter 5", "Module 2", "Topic 3"]
+  },
+  "title": "Multi-Agent Communication",
+  "initialProgress": 66,
+  "outline": [
+    { "id": 1, "title": "What is Multi-Agent Communication?", "duration": "4:35" },
+    { "id": 2, "title": "Why Communication is Important?", "duration": "3:22" },
+    { "id": 3, "title": "How Communication Works", "duration": "6:18" },
+    { "id": 4, "title": "Types of Communication Patterns", "duration": "5:41" },
+    { "id": 5, "title": "Message Structure Explained", "duration": "4:27" },
+    { "id": 6, "title": "Communication Protocols Overview", "duration": "6:03" },
+    { "id": 7, "title": "Example: Agent Collaboration", "duration": "7:15" },
+    { "id": 8, "title": "Best Practices", "duration": "4:50" },
+    { "id": 9, "title": "Key Takeaways", "duration": "2:31" },
+    { "id": 10, "title": "Quick Quiz", "duration": "3:10" }
+  ],
+  "initialActiveId": 3,
+  "initialCompletedIds": [1, 2],
+  "blocks": [
+    {
+      "id": "m1",
+      "topicId": 1,
+      "type": "heading",
+      "level": 1,
+      "text": "What is Multi-Agent Communication?"
+    },
+    {
+      "id": "m2",
+      "topicId": 1,
+      "type": "paragraph",
+      "muted": true,
+      "text": "A multi-agent system is a team of autonomous agents that share one goal but act independently. Instead of one big model doing everything, specialized agents cooperate — and communication is what turns individuals into a team."
+    },
+    {
+      "id": "m3",
+      "topicId": 1,
+      "type": "diagram",
+      "layout": "timeline",
+      "direction": "horizontal",
+      "nodes": [
+        { "id": "t1", "tag": "1995", "label": "Single Agents", "sublabel": "Isolated expert systems", "color": "muted" },
+        { "id": "t2", "tag": "2005", "label": "Rule-based MAS", "sublabel": "Fixed communication protocols", "color": "blue" },
+        { "id": "t3", "tag": "2015", "label": "Learning Agents", "sublabel": "RL-driven coordination", "color": "indigo" },
+        { "id": "t4", "tag": "2023", "label": "LLM Agents", "sublabel": "Natural-language messages", "color": "purple" },
+        { "id": "t5", "tag": "2026", "label": "Autonomous Teams", "sublabel": "Self-organizing workflows", "color": "green" }
+      ],
+      "caption": "Agent systems evolved from isolated programs into teams whose members talk to each other in natural language."
+    },
+
+    {
+      "id": "m4",
+      "topicId": 2,
+      "type": "heading",
+      "level": 1,
+      "text": "Why Communication is Important?"
+    },
+    {
+      "id": "m5",
+      "topicId": 2,
+      "type": "paragraph",
+      "text": "Without communication, agents duplicate work, contradict each other, and burn tokens re-discovering the same facts. With a shared protocol, they divide the work once and converge on a solution round after round."
+    },
+    {
+      "id": "m6",
+      "topicId": 2,
+      "type": "chart",
+      "chartType": "line",
+      "data": {
+        "labels": ["R1", "R2", "R3", "R4", "R5", "R6"],
+        "series": [
+          { "name": "With protocol", "values": [420, 300, 240, 200, 180, 150], "color": "green" },
+          { "name": "Without protocol", "values": [500, 480, 470, 430, 450, 440], "color": "red" }
+        ]
+      },
+      "sideText": "When agents follow a shared protocol, coordination latency drops steadily as they learn each other's message patterns. Without one, latency stays high and unpredictable."
+    },
+
+    {
+      "id": "m7",
+      "topicId": 3,
+      "type": "heading",
+      "level": 1,
+      "text": "How Communication Works"
+    },
+    {
+      "id": "m8",
+      "topicId": 3,
+      "type": "paragraph",
+      "muted": true,
+      "text": "In a multi-agent system, agents exchange messages to share information, request actions, and coordinate toward a common goal."
+    },
+    {
+      "id": "m9",
+      "topicId": 3,
+      "type": "heading",
+      "level": 3,
+      "text": "Communication Flow"
+    },
+    {
+      "id": "m10",
+      "topicId": 3,
+      "type": "diagram",
+      "layout": "flow",
+      "direction": "horizontal",
+      "nodes": [
+        { "id": "agentA", "label": "Agent A", "icon": "robot", "color": "blue", "shape": "iconBox" },
+        { "id": "msg1", "label": "Message", "icon": "mail", "color": "dark", "shape": "iconBox" },
+        { "id": "agentB", "label": "Agent B", "icon": "robot", "color": "green", "shape": "iconBox" },
+        { "id": "msg2", "label": "Message", "icon": "mail", "color": "dark", "shape": "iconBox" },
+        { "id": "agentC", "label": "Agent C", "icon": "robot", "color": "purple", "shape": "iconBox" }
+      ],
+      "edges": [],
+      "caption": "Agent A sends a message to Agent B, and Agent B processes it and can send a message to Agent C. This helps agents coordinate and work together."
+    },
+    {
+      "id": "m10b",
+      "topicId": 3,
+      "type": "heading",
+      "level": 3,
+      "text": "Message Sequence"
+    },
+    {
+      "id": "m10c",
+      "topicId": 3,
+      "type": "svg",
+      "alt": "Sequence diagram: Agent A sends request(task) to Agent B, Agent B replies inform(result)",
+      "width": 480,
+      "svg": "<svg viewBox=\"0 0 480 230\" xmlns=\"http://www.w3.org/2000/svg\" font-family=\"Inter, system-ui, sans-serif\"><defs><marker id=\"seq-arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" fill=\"var(--text-muted)\"/></marker></defs><rect x=\"70\" y=\"14\" width=\"100\" height=\"32\" rx=\"8\" fill=\"var(--card)\" stroke=\"var(--accent-blue)\" stroke-width=\"1.5\"/><text x=\"120\" y=\"34\" text-anchor=\"middle\" font-size=\"12\" fill=\"var(--text)\">Agent A</text><rect x=\"310\" y=\"14\" width=\"100\" height=\"32\" rx=\"8\" fill=\"var(--card)\" stroke=\"var(--accent-green)\" stroke-width=\"1.5\"/><text x=\"360\" y=\"34\" text-anchor=\"middle\" font-size=\"12\" fill=\"var(--text)\">Agent B</text><line x1=\"120\" y1=\"46\" x2=\"120\" y2=\"210\" stroke=\"var(--border)\" stroke-width=\"1.5\" stroke-dasharray=\"4 4\"/><line x1=\"360\" y1=\"46\" x2=\"360\" y2=\"210\" stroke=\"var(--border)\" stroke-width=\"1.5\" stroke-dasharray=\"4 4\"/><rect x=\"114\" y=\"78\" width=\"12\" height=\"44\" rx=\"3\" fill=\"var(--accent-blue)\" opacity=\"0.25\"/><rect x=\"354\" y=\"96\" width=\"12\" height=\"70\" rx=\"3\" fill=\"var(--accent-green)\" opacity=\"0.25\"/><line x1=\"126\" y1=\"96\" x2=\"350\" y2=\"96\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#seq-arrow)\"/><text x=\"238\" y=\"88\" text-anchor=\"middle\" font-size=\"11\" fill=\"var(--text)\">request(task)</text><line x1=\"354\" y1=\"160\" x2=\"130\" y2=\"160\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" stroke-dasharray=\"5 4\" marker-end=\"url(#seq-arrow)\"/><text x=\"238\" y=\"152\" text-anchor=\"middle\" font-size=\"11\" fill=\"var(--text)\">inform(result)</text><text x=\"240\" y=\"200\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--text-muted)\">Request is acknowledged with a typed reply — no silent failures</text></svg>",
+      "caption": "A custom sequence diagram emitted as raw SVG by the Lecture-maker agent — designs like this don't need a preset layout."
+    },
+    {
+      "id": "m11",
+      "topicId": 3,
+      "type": "heading",
+      "level": 3,
+      "text": "Step-by-Step Process"
+    },
+    {
+      "id": "m12",
+      "topicId": 3,
+      "type": "diagram",
+      "layout": "flow",
+      "direction": "horizontal",
+      "nodes": [
+        { "id": "s1", "label": "", "sublabel": "Planner receives a task and analyzes it.", "icon": "clipboard", "shape": "circle" },
+        { "id": "s2", "label": "", "sublabel": "Researcher gathers relevant information.", "icon": "search", "shape": "circle" },
+        { "id": "s3", "label": "", "sublabel": "Executor performs the action.", "icon": "settings", "shape": "circle" },
+        { "id": "s4", "label": "", "sublabel": "Result is returned to complete the task.", "icon": "check", "shape": "circle" }
+      ],
+      "edges": [],
+      "caption": "This process ensures that each agent plays a specific role to achieve the goal efficiently."
+    },
+
+    {
+      "id": "m13",
+      "topicId": 4,
+      "type": "heading",
+      "level": 1,
+      "text": "Types of Communication Patterns"
+    },
+    {
+      "id": "m14",
+      "topicId": 4,
+      "type": "diagram",
+      "layout": "grid",
+      "nodes": [
+        { "id": "direct", "label": "Direct", "icon": "mail", "color": "blue", "sublabel": "One-to-one. Fast and private, but every sender must know its receiver." },
+        { "id": "broadcast", "label": "Broadcast", "icon": "globe", "color": "green", "sublabel": "One-to-all. Simple discovery, but floods the network as teams grow." },
+        { "id": "pubsub", "label": "Pub-Sub", "icon": "layers", "color": "purple", "sublabel": "Topic-based. Agents subscribe only to what they need." },
+        { "id": "blackboard", "label": "Blackboard", "icon": "database", "color": "indigo", "sublabel": "Shared memory. Agents read and write a common workspace." }
+      ]
+    },
+    {
+      "id": "m15",
+      "topicId": 4,
+      "type": "heading",
+      "level": 3,
+      "text": "Message Volume by Protocol"
+    },
+    {
+      "id": "m16",
+      "topicId": 4,
+      "type": "chart",
+      "chartType": "bar",
+      "data": {
+        "labels": ["Direct", "Broadcast", "Pub-Sub", "Blackboard"],
+        "series": [{ "name": "Messages / min", "values": [120, 340, 260, 90], "color": "blue" }]
+      },
+      "sideText": "Broadcast produces the most traffic because every agent receives every message. Direct messaging keeps volume low but requires each sender to know its receiver."
+    },
+
+    {
+      "id": "m17",
+      "topicId": 5,
+      "type": "heading",
+      "level": 1,
+      "text": "Message Structure Explained"
+    },
+    {
+      "id": "m18",
+      "topicId": 5,
+      "type": "list",
+      "style": "bullet",
+      "items": [
+        "Addressed — a clear sender and receiver",
+        "Typed — inform, request, propose, or accept",
+        "Timestamped — so agents can order events",
+        "Self-contained — meaningful without extra context"
+      ]
+    },
+    {
+      "id": "m19",
+      "topicId": 5,
+      "type": "code",
+      "language": "python",
+      "code": "class Message:\n    def __init__(self, sender, receiver, content, msg_type, timestamp):\n        self.sender = sender\n        self.receiver = receiver\n        self.content = content\n        self.type = msg_type\n        self.timestamp = timestamp",
+      "sideText": "This code defines a message structure used by agents. It includes sender, receiver, content, type, and timestamp to ensure clear and meaningful communication."
+    },
+
+    {
+      "id": "m20",
+      "topicId": 6,
+      "type": "heading",
+      "level": 1,
+      "text": "Communication Protocols Overview"
+    },
+    {
+      "id": "m21",
+      "topicId": 6,
+      "type": "paragraph",
+      "text": "A protocol defines who may talk, when, and in what format. Looking at the mix of message types tells you how much negotiating — versus plain reporting — your team actually does."
+    },
+    {
+      "id": "m22",
+      "topicId": 6,
+      "type": "chart",
+      "chartType": "donut",
+      "data": {
+        "labels": ["Inform", "Request", "Propose", "Accept"],
+        "series": [{ "name": "Share", "values": [45, 25, 18, 12] }]
+      },
+      "sideText": "Most agent traffic is informational. Requests and proposals make up the negotiation layer, while accept messages close the loop on agreed actions."
+    },
+    {
+      "id": "m23",
+      "topicId": 6,
+      "type": "heading",
+      "level": 3,
+      "text": "System Architecture"
+    },
+    {
+      "id": "m24",
+      "topicId": 6,
+      "type": "image",
+      "src": "/images/lecture/architecture.svg",
+      "alt": "Multi-agent system architecture with message bus connecting agents",
+      "width": 480,
+      "caption": "A message bus connects every agent, so no agent needs a direct link to any other."
+    },
+
+    {
+      "id": "m25",
+      "topicId": 7,
+      "type": "heading",
+      "level": 1,
+      "text": "Example: Agent Collaboration"
+    },
+    {
+      "id": "m26",
+      "topicId": 7,
+      "type": "diagram",
+      "layout": "tree",
+      "nodes": [
+        { "id": "task", "label": "Task", "shape": "box" },
+        { "id": "planner", "label": "Planner", "shape": "box" },
+        { "id": "researcher", "label": "Researcher", "shape": "box" },
+        { "id": "executor", "label": "Executor", "shape": "box" },
+        { "id": "result", "label": "Result", "shape": "box" }
+      ],
+      "edges": [
+        { "from": "task", "to": "planner" },
+        { "from": "planner", "to": "researcher" },
+        { "from": "planner", "to": "executor" },
+        { "from": "researcher", "to": "result" },
+        { "from": "executor", "to": "result" }
+      ],
+      "sideText": "The planner breaks down the task and assigns work. The researcher finds the information and the executor carries out the action to get results."
+    },
+    {
+      "id": "m27",
+      "topicId": 7,
+      "type": "heading",
+      "level": 3,
+      "text": "Agent Learning Loop"
+    },
+    {
+      "id": "m28",
+      "topicId": 7,
+      "type": "diagram",
+      "layout": "cycle",
+      "nodes": [
+        { "id": "sense", "label": "Sense", "icon": "search", "color": "blue" },
+        { "id": "plan", "label": "Plan", "icon": "clipboard", "color": "indigo" },
+        { "id": "act", "label": "Act", "icon": "zap", "color": "green" },
+        { "id": "learn", "label": "Learn", "icon": "book", "color": "purple" }
+      ],
+      "caption": "Each communication round feeds back into the agent's model of its teammates, improving the next round."
+    },
+
+    {
+      "id": "m29",
+      "topicId": 8,
+      "type": "heading",
+      "level": 1,
+      "text": "Best Practices"
+    },
+    {
+      "id": "m30",
+      "topicId": 8,
+      "type": "callout",
+      "tone": "info",
+      "icon": "info",
+      "text": "Tip: Agents should acknowledge every message they receive — silent failures are the hardest bugs to find in a multi-agent system."
+    },
+    {
+      "id": "m31",
+      "topicId": 8,
+      "type": "list",
+      "style": "bullet",
+      "items": [
+        "Give every message a type and a timestamp",
+        "Acknowledge receipt — never fail silently",
+        "Prefer topic-based routing once the team grows past a handful of agents",
+        "Log every message; replaying a conversation beats guessing what happened"
+      ]
+    },
+
+    {
+      "id": "m32",
+      "topicId": 9,
+      "type": "heading",
+      "level": 1,
+      "text": "Key Takeaways"
+    },
+    {
+      "id": "m33",
+      "topicId": 9,
+      "type": "list",
+      "style": "bullet",
+      "items": [
+        "Communication is what turns individual agents into a team",
+        "Choose the messaging pattern that matches your team's size and shape",
+        "Structured, typed messages beat free-form text",
+        "Shared protocols cut coordination latency round after round"
+      ]
+    },
+
+    {
+      "id": "m34",
+      "topicId": 10,
+      "type": "heading",
+      "level": 1,
+      "text": "Quick Quiz"
+    },
+    {
+      "id": "m35",
+      "topicId": 10,
+      "type": "paragraph",
+      "muted": true,
+      "text": "Check yourself before finishing this module:"
+    },
+    {
+      "id": "m36",
+      "topicId": 10,
+      "type": "quiz",
+      "questions": [
+        {
+          "id": "q1",
+          "question": "Why does broadcast messaging become a problem as a team grows?",
+          "options": [
+            "It requires every agent to know its receiver in advance",
+            "Every agent receives every message, flooding the network",
+            "It cannot carry a message type or timestamp",
+            "It only works with a shared blackboard"
+          ],
+          "correctIndex": 1,
+          "explanation": "Broadcast is one-to-all, so traffic scales with team size. Topic-based Pub-Sub keeps volume down by letting agents subscribe only to what they need."
+        },
+        {
+          "id": "q2",
+          "question": "Which four fields should every agent message carry?",
+          "options": [
+            "Sender, receiver, content, and type",
+            "Priority, retries, timeout, and hash",
+            "Title, body, footer, and signature",
+            "Source IP, port, protocol, and size"
+          ],
+          "correctIndex": 0,
+          "explanation": "A well-formed message is addressed (sender/receiver), typed (inform/request/propose/accept), timestamped, and self-contained — the schema in this module lists sender, receiver, content, and type as the core fields."
+        },
+        {
+          "id": "q3",
+          "question": "In the Planner → Researcher/Executor → Result example, what happens if the Researcher never reports back?",
+          "options": [
+            "The Executor automatically takes over the research step",
+            "The Planner silently marks the task complete",
+            "The Result stays incomplete — the Planner is waiting on a message that never arrives",
+            "Nothing — Result only depends on the Executor"
+          ],
+          "correctIndex": 2,
+          "explanation": "The tree diagram shows Result depends on both Researcher and Executor. A silent failure from either agent stalls the whole task — which is exactly why every message should be acknowledged."
+        }
+      ]
+    },
+    {
+      "id": "m37",
+      "topicId": 10,
+      "type": "callout",
+      "tone": "success",
+      "text": "Nice work! For deeper practice, the AI Tutor can quiz you out loud in voice mode."
+    }
+  ]
+}

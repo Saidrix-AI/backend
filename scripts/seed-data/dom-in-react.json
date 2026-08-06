@@ -1,0 +1,438 @@
+{
+  "id": "dom-in-react",
+  "version": 1,
+  "course": {
+    "title": "React Fundamentals",
+    "breadcrumb": ["React Fundamentals", "Chapter 3", "Module 1", "Topic 2"]
+  },
+  "title": "DOM in React",
+  "initialProgress": 12,
+  "outline": [
+    { "id": 1, "title": "What is the DOM?", "duration": "4:10" },
+    { "id": 2, "title": "The Problem with Direct DOM Updates", "duration": "3:45" },
+    { "id": 3, "title": "Virtual DOM Explained", "duration": "5:30" },
+    { "id": 4, "title": "Reconciliation & Diffing", "duration": "6:05" },
+    { "id": 5, "title": "Keys in Lists", "duration": "4:20" },
+    { "id": 6, "title": "Refs: Escaping to the Real DOM", "duration": "5:15" },
+    { "id": 7, "title": "Batching & Concurrent Updates", "duration": "4:40" },
+    { "id": 8, "title": "Common Pitfalls", "duration": "4:00" },
+    { "id": 9, "title": "Key Takeaways", "duration": "2:30" },
+    { "id": 10, "title": "Quick Quiz", "duration": "3:00" }
+  ],
+  "initialActiveId": 1,
+  "initialCompletedIds": [],
+  "blocks": [
+    {
+      "id": "d1",
+      "topicId": 1,
+      "type": "heading",
+      "level": 1,
+      "text": "What is the DOM?"
+    },
+    {
+      "id": "d2",
+      "topicId": 1,
+      "type": "paragraph",
+      "muted": true,
+      "text": "React never asks you to touch the browser DOM directly — yet everything it renders ends up there. This module explains what the DOM is, why React puts a virtual copy in front of it, and how updates actually reach the screen."
+    },
+    {
+      "id": "d3",
+      "topicId": 1,
+      "type": "paragraph",
+      "text": "The Document Object Model is the browser's live, in-memory tree built from your HTML. Every tag becomes a node that JavaScript can read and modify — and every modification can make the browser recalculate what the page looks like."
+    },
+    {
+      "id": "d4",
+      "topicId": 1,
+      "type": "diagram",
+      "layout": "tree",
+      "nodes": [
+        { "id": "document", "label": "document", "shape": "box" },
+        { "id": "html", "label": "<html>", "shape": "box" },
+        { "id": "head", "label": "<head>", "shape": "box" },
+        { "id": "body", "label": "<body>", "shape": "box" },
+        { "id": "title", "label": "<title>", "shape": "box" },
+        { "id": "root", "label": "<div id=\"root\">", "shape": "box" }
+      ],
+      "edges": [
+        { "from": "document", "to": "html" },
+        { "from": "html", "to": "head" },
+        { "from": "html", "to": "body" },
+        { "from": "head", "to": "title" },
+        { "from": "body", "to": "root" }
+      ],
+      "caption": "The browser parses HTML into a tree of nodes. Your entire React app mounts inside a single one of them — usually <div id=\"root\">."
+    },
+
+    {
+      "id": "d6",
+      "topicId": 2,
+      "type": "heading",
+      "level": 1,
+      "text": "The Problem with Direct DOM Updates"
+    },
+    {
+      "id": "d7",
+      "topicId": 2,
+      "type": "paragraph",
+      "text": "Changing the DOM is easy — paying for it is not. Each change can send the browser through its whole rendering pipeline before pixels reach the screen."
+    },
+    {
+      "id": "d8",
+      "topicId": 2,
+      "type": "diagram",
+      "layout": "flow",
+      "direction": "horizontal",
+      "nodes": [
+        { "id": "js", "label": "JS Change", "icon": "zap", "color": "blue", "shape": "iconBox" },
+        { "id": "style", "label": "Style Recalc", "icon": "settings", "color": "indigo", "shape": "iconBox" },
+        { "id": "layout", "label": "Layout", "icon": "target", "color": "purple", "shape": "iconBox" },
+        { "id": "paint", "label": "Paint", "icon": "layers", "color": "green", "shape": "iconBox" },
+        { "id": "composite", "label": "Composite", "icon": "cpu", "color": "dark", "shape": "iconBox" }
+      ],
+      "edges": [],
+      "caption": "One DOM write can trigger style recalculation, layout, paint, and compositing. Do it hundreds of times per interaction and the page starts to stutter."
+    },
+    {
+      "id": "d9",
+      "topicId": 2,
+      "type": "chart",
+      "chartType": "bar",
+      "title": "Typical cost of one update (ms)",
+      "data": {
+        "labels": ["Read prop", "Write style", "Force layout", "Repaint"],
+        "series": [{ "name": "Cost (ms)", "values": [1, 4, 16, 28], "color": "indigo" }]
+      },
+      "sideText": "Reads are cheap, writes are pricier, and anything that forces synchronous layout or repaint dominates the frame budget — a 60fps frame gives you only about 16ms total."
+    },
+    {
+      "id": "d10",
+      "topicId": 2,
+      "type": "callout",
+      "tone": "warning",
+      "text": "Reading layout (offsetHeight) right after writing styles in a loop forces the browser to reflow again and again — the classic 'layout thrashing' bug."
+    },
+
+    {
+      "id": "d11",
+      "topicId": 3,
+      "type": "heading",
+      "level": 1,
+      "text": "Virtual DOM Explained"
+    },
+    {
+      "id": "d12",
+      "topicId": 3,
+      "type": "paragraph",
+      "text": "React's answer is to never let you talk to the real DOM during rendering. Components return a description of the UI — a tree of plain JavaScript objects. Creating and comparing these objects is orders of magnitude cheaper than touching real nodes."
+    },
+    {
+      "id": "d13",
+      "topicId": 3,
+      "type": "diagram",
+      "layout": "grid",
+      "nodes": [
+        { "id": "real", "label": "Real DOM", "icon": "globe", "color": "blue", "sublabel": "The browser's actual tree. Slow to mutate, expensive to layout and paint." },
+        { "id": "virtual", "label": "Virtual DOM", "icon": "layers", "color": "purple", "sublabel": "Plain JS objects describing the UI. Cheap to create, cheap to compare." },
+        { "id": "shadow", "label": "Shadow DOM", "icon": "lock", "color": "indigo", "sublabel": "Browser encapsulation for web components — unrelated to React's virtual DOM." }
+      ]
+    },
+    {
+      "id": "d14",
+      "topicId": 3,
+      "type": "image",
+      "src": "/images/lecture/vdom-diff.svg",
+      "alt": "Old virtual tree compared with new virtual tree, only the changed node is patched",
+      "width": 480,
+      "caption": "React keeps the previous virtual tree, builds a new one on every render, and patches only the nodes that differ."
+    },
+    {
+      "id": "d15",
+      "topicId": 3,
+      "type": "diagram",
+      "layout": "flow",
+      "direction": "horizontal",
+      "nodes": [
+        { "id": "state", "label": "State Change", "icon": "database", "color": "blue", "shape": "iconBox" },
+        { "id": "vtree", "label": "New Virtual Tree", "icon": "layers", "color": "purple", "shape": "iconBox" },
+        { "id": "diff", "label": "Diff", "icon": "search", "color": "indigo", "shape": "iconBox" },
+        { "id": "patch", "label": "Patch Real DOM", "icon": "zap", "color": "green", "shape": "iconBox" }
+      ],
+      "edges": [],
+      "caption": "setState never touches the DOM directly. React re-renders to a new virtual tree, diffs it against the old one, and applies the minimal set of real DOM operations."
+    },
+
+    {
+      "id": "d16",
+      "topicId": 4,
+      "type": "heading",
+      "level": 1,
+      "text": "Reconciliation & Diffing"
+    },
+    {
+      "id": "d17",
+      "topicId": 4,
+      "type": "paragraph",
+      "text": "Reconciliation is the algorithm that decides what changed. A perfect tree diff would cost O(n³), so React uses heuristics that finish in O(n) and are right nearly all of the time."
+    },
+    {
+      "id": "d18",
+      "topicId": 4,
+      "type": "diagram",
+      "layout": "cycle",
+      "nodes": [
+        { "id": "cstate", "label": "State", "icon": "database", "color": "blue" },
+        { "id": "crender", "label": "Render", "icon": "cpu", "color": "indigo" },
+        { "id": "cdiff", "label": "Diff", "icon": "search", "color": "purple" },
+        { "id": "ccommit", "label": "Commit", "icon": "check", "color": "green" }
+      ],
+      "caption": "Every update runs the same loop: state changes, components render a new virtual tree, React diffs it, and the commit phase writes the result to the real DOM."
+    },
+    {
+      "id": "d19",
+      "topicId": 4,
+      "type": "list",
+      "style": "bullet",
+      "items": [
+        "Different element type → React throws the whole subtree away and rebuilds it",
+        "Same type → React keeps the node and updates only the changed props",
+        "Same component type → state is preserved and the render is reused",
+        "Lists → children are matched by key, not by their position"
+      ]
+    },
+    {
+      "id": "d20",
+      "topicId": 4,
+      "type": "chart",
+      "chartType": "line",
+      "title": "Update time as the app grows (ms)",
+      "data": {
+        "labels": ["100", "500", "1k", "5k", "10k", "20k"],
+        "series": [
+          { "name": "Full re-render (direct DOM)", "values": [5, 14, 26, 60, 110, 200], "color": "red" },
+          { "name": "React diff + patch", "values": [7, 9, 13, 19, 26, 34], "color": "green" }
+        ]
+      },
+      "sideText": "With a handful of nodes, direct DOM code can even be faster. As the app grows, diffing wins: update cost tracks what changed, not how big the page is."
+    },
+
+    {
+      "id": "d21",
+      "topicId": 5,
+      "type": "heading",
+      "level": 1,
+      "text": "Keys in Lists"
+    },
+    {
+      "id": "d22",
+      "topicId": 5,
+      "type": "paragraph",
+      "text": "When React diffs a list, it needs to know which item is which across renders. Keys give list items a stable identity — without them, React falls back to matching by position."
+    },
+    {
+      "id": "d23",
+      "topicId": 5,
+      "type": "code",
+      "language": "javascript",
+      "code": "function TodoList({ todos }) {\n  return (\n    <ul>\n      {todos.map((todo) => (\n        <li key={todo.id}>{todo.text}</li>\n      ))}\n    </ul>\n  )\n}",
+      "sideText": "A stable key (like a database id) lets the diff algorithm move, insert, and delete list items precisely — keeping each row's DOM and state attached to the right item."
+    },
+    {
+      "id": "d24",
+      "topicId": 5,
+      "type": "callout",
+      "tone": "warning",
+      "text": "Avoid array indexes as keys on lists that can reorder, insert, or delete. Rows keep the wrong state — a checkbox checked on row 2 stays on 'position 2' even after the items shift."
+    },
+
+    {
+      "id": "d25",
+      "topicId": 6,
+      "type": "heading",
+      "level": 1,
+      "text": "Refs: Escaping to the Real DOM"
+    },
+    {
+      "id": "d26",
+      "topicId": 6,
+      "type": "paragraph",
+      "text": "Sometimes you genuinely need the real node — focusing an input, measuring size, scrolling, or driving a non-React library. Refs are React's official escape hatch."
+    },
+    {
+      "id": "d27",
+      "topicId": 6,
+      "type": "code",
+      "language": "javascript",
+      "code": "import { useRef, useEffect } from 'react'\n\nfunction SearchBox() {\n  const inputRef = useRef(null)\n\n  useEffect(() => {\n    inputRef.current.focus()\n  }, [])\n\n  return <input ref={inputRef} placeholder=\"Search...\" />\n}",
+      "sideText": "useRef gives you a stable container object. React fills .current with the real DOM node after commit — so effects are the safe place to use it."
+    },
+    {
+      "id": "d28",
+      "topicId": 6,
+      "type": "diagram",
+      "layout": "flow",
+      "direction": "horizontal",
+      "nodes": [
+        { "id": "r1", "label": "Create ref", "icon": "clipboard", "shape": "pill", "color": "blue" },
+        { "id": "r2", "label": "Attach via ref prop", "icon": "send", "shape": "pill", "color": "indigo" },
+        { "id": "r3", "label": "Read .current after commit", "icon": "check", "shape": "pill", "color": "green" }
+      ],
+      "edges": [],
+      "caption": "The ref is empty during render and only points at the DOM node once React has committed."
+    },
+
+    {
+      "id": "d29",
+      "topicId": 7,
+      "type": "heading",
+      "level": 1,
+      "text": "Batching & Concurrent Updates"
+    },
+    {
+      "id": "d30",
+      "topicId": 7,
+      "type": "paragraph",
+      "text": "React does not flush every setState to the DOM immediately. Updates are batched into a single render pass, and since React 18 the renderer can even pause and resume work to keep the page responsive."
+    },
+    {
+      "id": "d31",
+      "topicId": 7,
+      "type": "diagram",
+      "layout": "timeline",
+      "direction": "horizontal",
+      "nodes": [
+        { "id": "t1", "tag": "2013", "label": "Virtual DOM", "sublabel": "React launches with diff-based rendering", "color": "muted" },
+        { "id": "t2", "tag": "2017", "label": "Fiber", "sublabel": "React 16: interruptible reconciler", "color": "blue" },
+        { "id": "t3", "tag": "2020", "label": "React 17", "sublabel": "New foundations, no new features", "color": "indigo" },
+        { "id": "t4", "tag": "2022", "label": "Concurrent React", "sublabel": "React 18: automatic batching, transitions", "color": "purple" },
+        { "id": "t5", "tag": "2024", "label": "React Compiler", "sublabel": "Auto-memoization era begins", "color": "green" }
+      ]
+    },
+    {
+      "id": "d32",
+      "topicId": 7,
+      "type": "callout",
+      "tone": "info",
+      "text": "Since React 18, multiple setState calls in the same handler are batched into one re-render — even inside promises, timeouts, and native event callbacks."
+    },
+    {
+      "id": "d33",
+      "topicId": 7,
+      "type": "chart",
+      "chartType": "donut",
+      "title": "Where a typical update spends time",
+      "data": {
+        "labels": ["Diff", "Commit", "Browser paint", "Idle / other"],
+        "series": [{ "name": "Share", "values": [35, 20, 30, 15] }]
+      },
+      "sideText": "Inside a typical update, React's own diffing is only part of the story — the browser still spends real time painting whatever actually changed."
+    },
+
+    {
+      "id": "d34",
+      "topicId": 8,
+      "type": "heading",
+      "level": 1,
+      "text": "Common Pitfalls"
+    },
+    {
+      "id": "d35",
+      "topicId": 8,
+      "type": "list",
+      "style": "bullet",
+      "items": [
+        "Mutating the DOM behind React's back — your changes get overwritten on the next render",
+        "Reading layout during render — forces a sync reflow; do it in useEffect or useLayoutEffect",
+        "Index keys on reorderable lists — state sticks to the wrong rows",
+        "Overusing refs for data that should live in state — the UI stops reacting to it"
+      ]
+    },
+
+    {
+      "id": "d36",
+      "topicId": 9,
+      "type": "heading",
+      "level": 1,
+      "text": "Key Takeaways"
+    },
+    {
+      "id": "d37",
+      "topicId": 9,
+      "type": "list",
+      "style": "bullet",
+      "items": [
+        "The DOM is the browser's live tree; React renders to it through a cheap virtual copy",
+        "Diffing makes update cost proportional to what changed, not to app size",
+        "Keys give list items identity across renders — never index on dynamic lists",
+        "Refs are the official escape hatch to real nodes; read them after commit",
+        "Batching means the DOM updates once per event, not once per setState"
+      ]
+    },
+
+    {
+      "id": "d38",
+      "topicId": 10,
+      "type": "heading",
+      "level": 1,
+      "text": "Quick Quiz"
+    },
+    {
+      "id": "d39",
+      "topicId": 10,
+      "type": "paragraph",
+      "muted": true,
+      "text": "Check yourself before moving on:"
+    },
+    {
+      "id": "d40",
+      "topicId": 10,
+      "type": "quiz",
+      "questions": [
+        {
+          "id": "q1",
+          "question": "Why does React rebuild an entire subtree when the element type changes?",
+          "options": [
+            "It's a bug the team hasn't fixed yet",
+            "Different element types are assumed to produce incompatible trees, so React doesn't try to diff their contents",
+            "It only happens when keys are missing",
+            "React always rebuilds every subtree on every render"
+          ],
+          "correctIndex": 1,
+          "explanation": "This is one of React's core diffing heuristics: a type change (e.g. <div> to <span>) is treated as a completely different tree, so React unmounts the old one and mounts the new one instead of trying to patch it."
+        },
+        {
+          "id": "q2",
+          "question": "What goes wrong when you use array indexes as keys on a sortable or filterable list?",
+          "options": [
+            "The app throws a runtime error",
+            "Nothing — indexes are the recommended key for all lists",
+            "Row state (like a checked checkbox) can stick to the wrong item after the list reorders",
+            "The list renders in reverse order"
+          ],
+          "correctIndex": 2,
+          "explanation": "React matches list children by key. If the key is just the index, inserting or reordering items shifts which index maps to which item — so state that was attached to 'position 2' stays there even though a different item now sits at position 2."
+        },
+        {
+          "id": "q3",
+          "question": "Why is useEffect (or useLayoutEffect) the safe place to read ref.current?",
+          "options": [
+            "Refs don't work anywhere else",
+            "During render, React hasn't committed the DOM yet, so ref.current is still null",
+            "useEffect runs before the component renders",
+            "It isn't — refs can be read anywhere safely"
+          ],
+          "correctIndex": 1,
+          "explanation": "React fills in ref.current only after it commits changes to the real DOM. Effects run after commit, which is why reading a ref during render returns null or a stale node."
+        }
+      ]
+    },
+    {
+      "id": "d41",
+      "topicId": 10,
+      "type": "callout",
+      "tone": "success",
+      "text": "Nice work! Hit the play button on the next topic — the AI Tutor can quiz you further in voice mode."
+    }
+  ]
+}

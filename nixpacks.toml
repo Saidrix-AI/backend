@@ -1,0 +1,58 @@
+# Nixpacks build for the API server.
+#
+# Point your platform (Railway / Coolify / Zeabur / `nixpacks build`) at the
+# `backend/` directory as the app root.
+#
+# The one non-obvious part is Chromium. The lecture pipeline renders each
+# generated diagram in a headless browser to MEASURE it — text width, overlap,
+# clipping — rather than trusting coordinates a model wrote. `playwright-core`
+# is a client library that ships no browser, so the browser comes from Nix here
+# and CHROMIUM_EXECUTABLE_PATH points the client at it.
+#
+# If you would rather not carry a ~400MB browser layer: drop `chromium` from
+# nixPkgs and set LECTURE_SVG_RENDER_ENABLED=false. Lectures still generate;
+# diagram geometry falls back to font metrics and the vision review is skipped.
+
+[phases.setup]
+nixPkgs = ["nodejs_22", "chromium", "fontconfig", "freetype"]
+
+[phases.install]
+# `npm ci` (not `install`): the lockfile is the build input, and dev
+# dependencies are needed here because TypeScript itself is one.
+cmds = ["npm ci"]
+
+[phases.build]
+# Compile, then drop the dev tree so it never reaches the running image.
+# `npm prune` is what keeps vitest, tsx, nodemon and — importantly —
+# mongodb-memory-server (which downloads a ~100MB mongod on install) out of it.
+cmds = ["npm run build", "npm prune --omit=dev"]
+
+[start]
+cmd = "node dist/index.js"
+
+[variables]
+NODE_ENV = "production"
+# Where the Nix chromium package puts its binary. Read by
+# agents/lecture-maker/browser.ts.
+CHROMIUM_EXECUTABLE_PATH = "/root/.nix-profile/bin/chromium"
+# Fonts are loaded from backend/assets/fonts as data URIs, so no system font
+# config is needed — but fontconfig must have somewhere writable to cache.
+XDG_CACHE_HOME = "/tmp/.cache"
+
+# --- Environment variables you MUST set on the platform ---------------------
+# Deliberately NOT defaulted here; the server refuses to boot in production
+# without them (see src/config/env.ts#productionConfigProblems):
+#
+#   MONGODB_URI               connection string, with credentials
+#   JWT_ACCESS_SECRET         openssl rand -base64 48
+#   VOICE_SERVICE_SECRET      openssl rand -base64 48  (MUST differ from the above)
+#   CORS_ORIGIN               https://your-frontend-domain  (no localhost)
+#   APP_URL                   https://your-frontend-domain
+#   TRUST_PROXY               number of proxy hops in front of this app (usually 1)
+#   LIVEKIT_URL               wss://...
+#   LIVEKIT_API_KEY           real key, not "devkey"
+#   LIVEKIT_API_SECRET        real secret, not "secret"
+#   LEMONSQUEEZY_TEST_MODE    false
+#
+# Plus the LemonSqueezy keys, LLM provider key, and optionally
+# TAVILY_API_KEY / PINECONE_API_KEY / SMTP_*. See .env.example.

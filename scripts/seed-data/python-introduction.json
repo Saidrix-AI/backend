@@ -1,0 +1,374 @@
+{
+  "id": "python-introduction",
+  "version": 1,
+  "course": {
+    "title": "Programming Foundations",
+    "breadcrumb": ["Programming Foundations", "Chapter 1", "Module 1", "Topic 1"]
+  },
+  "title": "Introduction to Python",
+  "initialProgress": 8,
+  "outline": [
+    { "id": 1, "title": "What is Python?", "duration": "4:20" },
+    { "id": 2, "title": "Why Learn Python?", "duration": "3:50" },
+    { "id": 3, "title": "Running Your First Program", "duration": "4:05" },
+    { "id": 4, "title": "Variables & Assignment", "duration": "4:40" },
+    { "id": 5, "title": "Data Types", "duration": "5:10" },
+    { "id": 6, "title": "Operators", "duration": "4:15" },
+    { "id": 7, "title": "Control Flow", "duration": "5:30" },
+    { "id": 8, "title": "Loops", "duration": "4:55" },
+    { "id": 9, "title": "Functions", "duration": "5:00" },
+    { "id": 10, "title": "Quick Quiz", "duration": "3:20" }
+  ],
+  "initialActiveId": 1,
+  "initialCompletedIds": [],
+  "blocks": [
+    {
+      "id": "p1",
+      "topicId": 1,
+      "type": "heading",
+      "level": 1,
+      "text": "What is Python?"
+    },
+    {
+      "id": "p2",
+      "topicId": 1,
+      "type": "paragraph",
+      "muted": true,
+      "text": "Python is a high-level, general-purpose programming language known for clean, readable syntax. You write plain-English-like code, and Python's interpreter turns it into instructions the computer can run."
+    },
+    {
+      "id": "p3",
+      "topicId": 1,
+      "type": "heading",
+      "level": 3,
+      "text": "How Python Runs Your Code"
+    },
+    {
+      "id": "p4",
+      "topicId": 1,
+      "type": "svg",
+      "alt": "Python execution pipeline: source file, compiler, bytecode, Python Virtual Machine, output",
+      "width": 520,
+      "svg": "<svg viewBox=\"0 0 520 110\" xmlns=\"http://www.w3.org/2000/svg\" font-family=\"Inter, system-ui, sans-serif\"><defs><marker id=\"pyi-arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" fill=\"var(--text-muted)\"/></marker></defs><rect x=\"8\" y=\"18\" width=\"88\" height=\"46\" rx=\"8\" fill=\"var(--card)\" stroke=\"var(--accent-blue)\" stroke-width=\"1.5\"/><text x=\"52\" y=\"38\" text-anchor=\"middle\" font-size=\"11\" fill=\"var(--text)\">hello.py</text><text x=\"52\" y=\"53\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">source</text><line x1=\"98\" y1=\"41\" x2=\"112\" y2=\"41\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyi-arrow)\"/><rect x=\"114\" y=\"18\" width=\"88\" height=\"46\" rx=\"8\" fill=\"var(--card)\" stroke=\"var(--accent-indigo)\" stroke-width=\"1.5\"/><text x=\"158\" y=\"45\" text-anchor=\"middle\" font-size=\"11\" fill=\"var(--text)\">Compiler</text><line x1=\"204\" y1=\"41\" x2=\"218\" y2=\"41\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyi-arrow)\"/><rect x=\"220\" y=\"18\" width=\"88\" height=\"46\" rx=\"8\" fill=\"var(--card)\" stroke=\"var(--accent-purple)\" stroke-width=\"1.5\"/><text x=\"264\" y=\"38\" text-anchor=\"middle\" font-size=\"11\" fill=\"var(--text)\">Bytecode</text><text x=\"264\" y=\"53\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">.pyc</text><line x1=\"310\" y1=\"41\" x2=\"324\" y2=\"41\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyi-arrow)\"/><rect x=\"326\" y=\"18\" width=\"88\" height=\"46\" rx=\"8\" fill=\"var(--card)\" stroke=\"var(--accent-green)\" stroke-width=\"1.5\"/><text x=\"370\" y=\"38\" text-anchor=\"middle\" font-size=\"11\" fill=\"var(--text)\">PVM</text><text x=\"370\" y=\"53\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">runtime</text><line x1=\"416\" y1=\"41\" x2=\"430\" y2=\"41\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyi-arrow)\"/><rect x=\"432\" y=\"18\" width=\"80\" height=\"46\" rx=\"8\" fill=\"var(--dark)\"/><text x=\"472\" y=\"45\" text-anchor=\"middle\" font-size=\"11\" fill=\"#ffffff\">Output</text><text x=\"260\" y=\"90\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--text-muted)\">Python compiles your source to bytecode, then the Python Virtual Machine runs it line by line.</text></svg>",
+      "caption": "Because Python is interpreted, you can run code instantly without a separate build step."
+    },
+    {
+      "id": "p5",
+      "topicId": 1,
+      "type": "callout",
+      "tone": "info",
+      "text": "Python was created by Guido van Rossum and released in 1991. The name comes from the comedy group Monty Python — not the snake."
+    },
+
+    {
+      "id": "p6",
+      "topicId": 2,
+      "type": "heading",
+      "level": 1,
+      "text": "Why Learn Python?"
+    },
+    {
+      "id": "p7",
+      "topicId": 2,
+      "type": "paragraph",
+      "text": "Python is one of the most in-demand languages in the world. Its simple syntax makes it a great first language, and it powers everything from websites to artificial intelligence."
+    },
+    {
+      "id": "p8",
+      "topicId": 2,
+      "type": "heading",
+      "level": 3,
+      "text": "Where Python Is Used"
+    },
+    {
+      "id": "p9",
+      "topicId": 2,
+      "type": "svg",
+      "alt": "Bar chart of Python usage by domain: Data Science 90, AI and ML 85, Web Development 72, Automation 64, Scripting 50",
+      "width": 460,
+      "svg": "<svg viewBox=\"0 0 460 215\" xmlns=\"http://www.w3.org/2000/svg\" font-family=\"Inter, system-ui, sans-serif\"><line x1=\"42\" y1=\"35\" x2=\"448\" y2=\"35\" stroke=\"var(--border)\" stroke-width=\"1\"/><line x1=\"42\" y1=\"70\" x2=\"448\" y2=\"70\" stroke=\"var(--border)\" stroke-width=\"1\"/><line x1=\"42\" y1=\"105\" x2=\"448\" y2=\"105\" stroke=\"var(--border)\" stroke-width=\"1\"/><line x1=\"42\" y1=\"140\" x2=\"448\" y2=\"140\" stroke=\"var(--border)\" stroke-width=\"1\"/><line x1=\"42\" y1=\"175\" x2=\"448\" y2=\"175\" stroke=\"var(--text-muted)\" stroke-width=\"1\"/><text x=\"34\" y=\"39\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--text-muted)\">100</text><text x=\"34\" y=\"109\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--text-muted)\">50</text><text x=\"34\" y=\"179\" text-anchor=\"end\" font-size=\"9\" fill=\"var(--text-muted)\">0</text><rect x=\"60\" y=\"49\" width=\"44\" height=\"126\" rx=\"4\" fill=\"var(--accent-blue)\"/><rect x=\"138\" y=\"56\" width=\"44\" height=\"119\" rx=\"4\" fill=\"var(--accent-indigo)\"/><rect x=\"216\" y=\"74\" width=\"44\" height=\"101\" rx=\"4\" fill=\"var(--accent-purple)\"/><rect x=\"294\" y=\"85\" width=\"44\" height=\"90\" rx=\"4\" fill=\"var(--accent-green)\"/><rect x=\"372\" y=\"105\" width=\"44\" height=\"70\" rx=\"4\" fill=\"var(--accent-red)\"/><text x=\"82\" y=\"190\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">Data Sci</text><text x=\"160\" y=\"190\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">AI / ML</text><text x=\"238\" y=\"190\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">Web</text><text x=\"316\" y=\"190\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">Automation</text><text x=\"394\" y=\"190\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">Scripting</text></svg>",
+      "sideText": "Data science and machine learning lean on Python's libraries like NumPy, pandas, and PyTorch — but the same language also builds web backends and automates everyday tasks."
+    },
+    {
+      "id": "p10",
+      "topicId": 2,
+      "type": "heading",
+      "level": 3,
+      "text": "Growing Popularity"
+    },
+    {
+      "id": "p11",
+      "topicId": 2,
+      "type": "svg",
+      "alt": "Line chart showing Python popularity rising from 2018 to 2026",
+      "width": 460,
+      "svg": "<svg viewBox=\"0 0 460 200\" xmlns=\"http://www.w3.org/2000/svg\" font-family=\"Inter, system-ui, sans-serif\"><line x1=\"40\" y1=\"30\" x2=\"440\" y2=\"30\" stroke=\"var(--border)\" stroke-width=\"1\"/><line x1=\"40\" y1=\"95\" x2=\"440\" y2=\"95\" stroke=\"var(--border)\" stroke-width=\"1\"/><line x1=\"40\" y1=\"160\" x2=\"440\" y2=\"160\" stroke=\"var(--text-muted)\" stroke-width=\"1\"/><path d=\"M40,147 L140,129 L240,98 L340,69 L440,43 L440,160 L40,160 Z\" fill=\"var(--accent-blue)\" opacity=\"0.12\"/><polyline points=\"40,147 140,129 240,98 340,69 440,43\" fill=\"none\" stroke=\"var(--accent-blue)\" stroke-width=\"2\"/><circle cx=\"40\" cy=\"147\" r=\"3.5\" fill=\"var(--accent-blue)\"/><circle cx=\"140\" cy=\"129\" r=\"3.5\" fill=\"var(--accent-blue)\"/><circle cx=\"240\" cy=\"98\" r=\"3.5\" fill=\"var(--accent-blue)\"/><circle cx=\"340\" cy=\"69\" r=\"3.5\" fill=\"var(--accent-blue)\"/><circle cx=\"440\" cy=\"43\" r=\"3.5\" fill=\"var(--accent-blue)\"/><text x=\"40\" y=\"178\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">2018</text><text x=\"140\" y=\"178\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">2020</text><text x=\"240\" y=\"178\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">2022</text><text x=\"340\" y=\"178\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">2024</text><text x=\"440\" y=\"178\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">2026</text></svg>",
+      "sideText": "Python has climbed to the top of nearly every language ranking over the past decade, driven largely by the data and AI boom."
+    },
+
+    {
+      "id": "p12",
+      "topicId": 3,
+      "type": "heading",
+      "level": 1,
+      "text": "Running Your First Program"
+    },
+    {
+      "id": "p13",
+      "topicId": 3,
+      "type": "paragraph",
+      "text": "Every programmer starts here: printing a message to the screen. The print() function displays whatever you pass to it."
+    },
+    {
+      "id": "p14",
+      "topicId": 3,
+      "type": "code",
+      "language": "python",
+      "code": "# hello.py\nprint(\"Hello, World!\")",
+      "sideText": "Save this in a file called hello.py, then run it from your terminal with: python hello.py"
+    },
+    {
+      "id": "p15",
+      "topicId": 3,
+      "type": "svg",
+      "alt": "Steps to run a Python program: write code, save as hello.py, run python hello.py, see output",
+      "width": 480,
+      "svg": "<svg viewBox=\"0 0 480 78\" xmlns=\"http://www.w3.org/2000/svg\" font-family=\"Inter, system-ui, sans-serif\"><defs><marker id=\"pyr-arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" fill=\"var(--text-muted)\"/></marker></defs><rect x=\"6\" y=\"22\" width=\"104\" height=\"34\" rx=\"17\" fill=\"var(--card)\" stroke=\"var(--accent-blue)\" stroke-width=\"1.5\"/><text x=\"58\" y=\"43\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--text)\">Write code</text><line x1=\"112\" y1=\"39\" x2=\"126\" y2=\"39\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyr-arrow)\"/><rect x=\"128\" y=\"22\" width=\"104\" height=\"34\" rx=\"17\" fill=\"var(--card)\" stroke=\"var(--accent-indigo)\" stroke-width=\"1.5\"/><text x=\"180\" y=\"43\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--text)\">Save hello.py</text><line x1=\"234\" y1=\"39\" x2=\"248\" y2=\"39\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyr-arrow)\"/><rect x=\"250\" y=\"22\" width=\"120\" height=\"34\" rx=\"17\" fill=\"var(--card)\" stroke=\"var(--accent-purple)\" stroke-width=\"1.5\"/><text x=\"310\" y=\"43\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--text)\">python hello.py</text><line x1=\"372\" y1=\"39\" x2=\"386\" y2=\"39\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyr-arrow)\"/><rect x=\"388\" y=\"22\" width=\"86\" height=\"34\" rx=\"17\" fill=\"var(--dark)\"/><text x=\"431\" y=\"43\" text-anchor=\"middle\" font-size=\"10\" fill=\"#ffffff\">See output</text></svg>",
+      "caption": "No compiling, no setup ceremony — write, save, run."
+    },
+
+    {
+      "id": "p16",
+      "topicId": 4,
+      "type": "heading",
+      "level": 1,
+      "text": "Variables & Assignment"
+    },
+    {
+      "id": "p17",
+      "topicId": 4,
+      "type": "paragraph",
+      "text": "A variable is a name that points to a value. You create one with the = sign — no need to declare a type first. Python figures out the type from the value you assign."
+    },
+    {
+      "id": "p18",
+      "topicId": 4,
+      "type": "svg",
+      "alt": "Variable binding diagram: name points to the string Alice, age points to the number 25",
+      "width": 440,
+      "svg": "<svg viewBox=\"0 0 440 120\" xmlns=\"http://www.w3.org/2000/svg\" font-family=\"Inter, system-ui, sans-serif\"><defs><marker id=\"pyv-arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" fill=\"var(--text-muted)\"/></marker></defs><rect x=\"20\" y=\"16\" width=\"84\" height=\"34\" rx=\"8\" fill=\"var(--card)\" stroke=\"var(--accent-blue)\" stroke-width=\"1.5\"/><text x=\"62\" y=\"38\" text-anchor=\"middle\" font-size=\"12\" fill=\"var(--text)\">name</text><line x1=\"106\" y1=\"33\" x2=\"168\" y2=\"33\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyv-arrow)\"/><rect x=\"170\" y=\"16\" width=\"128\" height=\"34\" rx=\"8\" fill=\"rgba(59,130,246,0.08)\" stroke=\"var(--border)\"/><text x=\"234\" y=\"38\" text-anchor=\"middle\" font-size=\"12\" fill=\"var(--text)\">'Alice'</text><text x=\"320\" y=\"38\" font-size=\"10\" fill=\"var(--text-muted)\">str</text><rect x=\"20\" y=\"70\" width=\"84\" height=\"34\" rx=\"8\" fill=\"var(--card)\" stroke=\"var(--accent-green)\" stroke-width=\"1.5\"/><text x=\"62\" y=\"92\" text-anchor=\"middle\" font-size=\"12\" fill=\"var(--text)\">age</text><line x1=\"106\" y1=\"87\" x2=\"168\" y2=\"87\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyv-arrow)\"/><rect x=\"170\" y=\"70\" width=\"128\" height=\"34\" rx=\"8\" fill=\"rgba(34,197,94,0.08)\" stroke=\"var(--border)\"/><text x=\"234\" y=\"92\" text-anchor=\"middle\" font-size=\"12\" fill=\"var(--text)\">25</text><text x=\"320\" y=\"92\" font-size=\"10\" fill=\"var(--text-muted)\">int</text></svg>",
+      "caption": "The variable is just a label; the value lives in memory and the name points to it."
+    },
+    {
+      "id": "p19",
+      "topicId": 4,
+      "type": "code",
+      "language": "python",
+      "code": "name = \"Alice\"   # a string\nage = 25          # an integer\nprint(name, \"is\", age)"
+    },
+
+    {
+      "id": "p20",
+      "topicId": 5,
+      "type": "heading",
+      "level": 1,
+      "text": "Data Types"
+    },
+    {
+      "id": "p21",
+      "topicId": 5,
+      "type": "paragraph",
+      "text": "Every value in Python has a type. These are the core built-in types you'll use constantly."
+    },
+    {
+      "id": "p22",
+      "topicId": 5,
+      "type": "svg",
+      "alt": "Grid of Python data types: int 25, float 3.14, str hello, bool True, list, dict",
+      "width": 480,
+      "svg": "<svg viewBox=\"0 0 480 150\" xmlns=\"http://www.w3.org/2000/svg\" font-family=\"Inter, system-ui, sans-serif\"><rect x=\"8\" y=\"10\" width=\"148\" height=\"58\" rx=\"9\" fill=\"var(--card)\" stroke=\"var(--border)\"/><text x=\"22\" y=\"32\" font-size=\"12\" font-weight=\"600\" fill=\"var(--accent-blue)\">int</text><text x=\"22\" y=\"52\" font-size=\"11\" fill=\"var(--text-muted)\">25</text><rect x=\"164\" y=\"10\" width=\"148\" height=\"58\" rx=\"9\" fill=\"var(--card)\" stroke=\"var(--border)\"/><text x=\"178\" y=\"32\" font-size=\"12\" font-weight=\"600\" fill=\"var(--accent-indigo)\">float</text><text x=\"178\" y=\"52\" font-size=\"11\" fill=\"var(--text-muted)\">3.14</text><rect x=\"320\" y=\"10\" width=\"152\" height=\"58\" rx=\"9\" fill=\"var(--card)\" stroke=\"var(--border)\"/><text x=\"334\" y=\"32\" font-size=\"12\" font-weight=\"600\" fill=\"var(--accent-purple)\">str</text><text x=\"334\" y=\"52\" font-size=\"11\" fill=\"var(--text-muted)\">'hello'</text><rect x=\"8\" y=\"78\" width=\"148\" height=\"58\" rx=\"9\" fill=\"var(--card)\" stroke=\"var(--border)\"/><text x=\"22\" y=\"100\" font-size=\"12\" font-weight=\"600\" fill=\"var(--accent-green)\">bool</text><text x=\"22\" y=\"120\" font-size=\"11\" fill=\"var(--text-muted)\">True / False</text><rect x=\"164\" y=\"78\" width=\"148\" height=\"58\" rx=\"9\" fill=\"var(--card)\" stroke=\"var(--border)\"/><text x=\"178\" y=\"100\" font-size=\"12\" font-weight=\"600\" fill=\"var(--accent-red)\">list</text><text x=\"178\" y=\"120\" font-size=\"11\" fill=\"var(--text-muted)\">[1, 2, 3]</text><rect x=\"320\" y=\"78\" width=\"152\" height=\"58\" rx=\"9\" fill=\"var(--card)\" stroke=\"var(--border)\"/><text x=\"334\" y=\"100\" font-size=\"12\" font-weight=\"600\" fill=\"var(--dark)\">dict</text><text x=\"334\" y=\"120\" font-size=\"11\" fill=\"var(--text-muted)\">{'a': 1}</text></svg>",
+      "caption": "Use the type() function on any value to see its type at runtime."
+    },
+
+    {
+      "id": "p23",
+      "topicId": 6,
+      "type": "heading",
+      "level": 1,
+      "text": "Operators"
+    },
+    {
+      "id": "p24",
+      "topicId": 6,
+      "type": "paragraph",
+      "text": "Operators let you compute and compare values. Python groups them into a few families."
+    },
+    {
+      "id": "p25",
+      "topicId": 6,
+      "type": "svg",
+      "alt": "Operator families: arithmetic plus minus star slash, comparison equals less greater, logical and or not",
+      "width": 480,
+      "svg": "<svg viewBox=\"0 0 480 96\" xmlns=\"http://www.w3.org/2000/svg\" font-family=\"Inter, system-ui, sans-serif\"><rect x=\"8\" y=\"12\" width=\"148\" height=\"72\" rx=\"9\" fill=\"rgba(59,130,246,0.06)\" stroke=\"var(--accent-blue)\"/><text x=\"82\" y=\"34\" text-anchor=\"middle\" font-size=\"11\" font-weight=\"600\" fill=\"var(--text)\">Arithmetic</text><text x=\"82\" y=\"58\" text-anchor=\"middle\" font-size=\"14\" fill=\"var(--accent-blue)\">+  -  *  /  %</text><rect x=\"166\" y=\"12\" width=\"148\" height=\"72\" rx=\"9\" fill=\"rgba(139,92,246,0.06)\" stroke=\"var(--accent-purple)\"/><text x=\"240\" y=\"34\" text-anchor=\"middle\" font-size=\"11\" font-weight=\"600\" fill=\"var(--text)\">Comparison</text><text x=\"240\" y=\"58\" text-anchor=\"middle\" font-size=\"14\" fill=\"var(--accent-purple)\">==  !=  &lt;  &gt;</text><rect x=\"324\" y=\"12\" width=\"148\" height=\"72\" rx=\"9\" fill=\"rgba(34,197,94,0.06)\" stroke=\"var(--accent-green)\"/><text x=\"398\" y=\"34\" text-anchor=\"middle\" font-size=\"11\" font-weight=\"600\" fill=\"var(--text)\">Logical</text><text x=\"398\" y=\"58\" text-anchor=\"middle\" font-size=\"14\" fill=\"var(--accent-green)\">and  or  not</text></svg>"
+    },
+    {
+      "id": "p26",
+      "topicId": 6,
+      "type": "code",
+      "language": "python",
+      "code": "total = 10 + 5      # 15\nis_adult = age >= 18  # True or False\nready = is_adult and total > 0"
+    },
+
+    {
+      "id": "p27",
+      "topicId": 7,
+      "type": "heading",
+      "level": 1,
+      "text": "Control Flow"
+    },
+    {
+      "id": "p28",
+      "topicId": 7,
+      "type": "paragraph",
+      "text": "Control flow lets your program make decisions. An if statement runs a block only when its condition is true; else handles everything else."
+    },
+    {
+      "id": "p29",
+      "topicId": 7,
+      "type": "svg",
+      "alt": "Flowchart: start, decision age greater or equal 18, yes leads to Can vote, no leads to Cannot vote",
+      "width": 420,
+      "svg": "<svg viewBox=\"0 0 420 210\" xmlns=\"http://www.w3.org/2000/svg\" font-family=\"Inter, system-ui, sans-serif\"><defs><marker id=\"pyc-arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" fill=\"var(--text-muted)\"/></marker></defs><rect x=\"160\" y=\"8\" width=\"100\" height=\"30\" rx=\"15\" fill=\"var(--card)\" stroke=\"var(--text-muted)\"/><text x=\"210\" y=\"27\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--text)\">start</text><line x1=\"210\" y1=\"38\" x2=\"210\" y2=\"52\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyc-arrow)\"/><polygon points=\"210,54 288,92 210,130 132,92\" fill=\"rgba(99,102,241,0.08)\" stroke=\"var(--accent-indigo)\" stroke-width=\"1.5\"/><text x=\"210\" y=\"89\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--text)\">age &gt;= 18 ?</text><text x=\"210\" y=\"103\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">decision</text><line x1=\"288\" y1=\"92\" x2=\"330\" y2=\"92\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\"/><line x1=\"330\" y1=\"92\" x2=\"330\" y2=\"158\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyc-arrow)\"/><text x=\"300\" y=\"84\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--accent-green)\">True</text><line x1=\"132\" y1=\"92\" x2=\"90\" y2=\"92\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\"/><line x1=\"90\" y1=\"92\" x2=\"90\" y2=\"158\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyc-arrow)\"/><text x=\"110\" y=\"84\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--accent-red)\">False</text><rect x=\"272\" y=\"160\" width=\"116\" height=\"36\" rx=\"8\" fill=\"var(--card)\" stroke=\"var(--accent-green)\" stroke-width=\"1.5\"/><text x=\"330\" y=\"182\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--text)\">Can vote</text><rect x=\"32\" y=\"160\" width=\"116\" height=\"36\" rx=\"8\" fill=\"var(--card)\" stroke=\"var(--accent-red)\" stroke-width=\"1.5\"/><text x=\"90\" y=\"182\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--text)\">Cannot vote</text></svg>",
+      "sideText": "The diamond is the decision point. Depending on whether the condition is True or False, control flows down one of the two branches."
+    },
+    {
+      "id": "p30",
+      "topicId": 7,
+      "type": "code",
+      "language": "python",
+      "code": "if age >= 18:\n    print(\"Can vote\")\nelse:\n    print(\"Cannot vote\")"
+    },
+
+    {
+      "id": "p31",
+      "topicId": 8,
+      "type": "heading",
+      "level": 1,
+      "text": "Loops"
+    },
+    {
+      "id": "p32",
+      "topicId": 8,
+      "type": "paragraph",
+      "text": "Loops repeat a block of code. A for loop walks through a sequence; each pass checks whether there is a next item, runs the body, and moves on."
+    },
+    {
+      "id": "p33",
+      "topicId": 8,
+      "type": "svg",
+      "alt": "Loop cycle: check for next item, run the loop body, move to next item, repeat",
+      "width": 340,
+      "svg": "<svg viewBox=\"0 0 340 200\" xmlns=\"http://www.w3.org/2000/svg\" font-family=\"Inter, system-ui, sans-serif\"><defs><marker id=\"pyl-arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" fill=\"var(--text-muted)\"/></marker></defs><rect x=\"110\" y=\"14\" width=\"120\" height=\"38\" rx=\"9\" fill=\"var(--card)\" stroke=\"var(--accent-indigo)\" stroke-width=\"1.5\"/><text x=\"170\" y=\"37\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--text)\">Next item?</text><rect x=\"214\" y=\"120\" width=\"110\" height=\"38\" rx=\"9\" fill=\"var(--card)\" stroke=\"var(--accent-green)\" stroke-width=\"1.5\"/><text x=\"269\" y=\"143\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--text)\">Run body</text><rect x=\"16\" y=\"120\" width=\"110\" height=\"38\" rx=\"9\" fill=\"var(--card)\" stroke=\"var(--accent-blue)\" stroke-width=\"1.5\"/><text x=\"71\" y=\"143\" text-anchor=\"middle\" font-size=\"10\" fill=\"var(--text)\">Advance</text><path d=\"M210,44 C260,60 285,90 275,118\" fill=\"none\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyl-arrow)\"/><path d=\"M214,142 L128,140\" fill=\"none\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyl-arrow)\"/><path d=\"M64,118 C56,88 90,58 128,46\" fill=\"none\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyl-arrow)\"/><text x=\"170\" y=\"186\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--text-muted)\">Repeat until no items remain</text></svg>",
+      "sideText": "When there are no more items, the loop ends and the program continues below it."
+    },
+    {
+      "id": "p34",
+      "topicId": 8,
+      "type": "code",
+      "language": "python",
+      "code": "for i in range(3):\n    print(\"count\", i)\n# prints 0, 1, 2"
+    },
+
+    {
+      "id": "p35",
+      "topicId": 9,
+      "type": "heading",
+      "level": 1,
+      "text": "Functions"
+    },
+    {
+      "id": "p36",
+      "topicId": 9,
+      "type": "paragraph",
+      "text": "A function is reusable, named block of code. It takes inputs (arguments), does work, and returns a result — so you write the logic once and call it anywhere."
+    },
+    {
+      "id": "p37",
+      "topicId": 9,
+      "type": "svg",
+      "alt": "Function diagram: inputs a and b enter the add function, which returns a plus b",
+      "width": 460,
+      "svg": "<svg viewBox=\"0 0 460 130\" xmlns=\"http://www.w3.org/2000/svg\" font-family=\"Inter, system-ui, sans-serif\"><defs><marker id=\"pyf-arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto\"><path d=\"M0,0 L10,5 L0,10 z\" fill=\"var(--text-muted)\"/></marker></defs><circle cx=\"40\" cy=\"40\" r=\"18\" fill=\"rgba(59,130,246,0.1)\" stroke=\"var(--accent-blue)\" stroke-width=\"1.5\"/><text x=\"40\" y=\"44\" text-anchor=\"middle\" font-size=\"12\" fill=\"var(--text)\">a</text><circle cx=\"40\" cy=\"90\" r=\"18\" fill=\"rgba(59,130,246,0.1)\" stroke=\"var(--accent-blue)\" stroke-width=\"1.5\"/><text x=\"40\" y=\"94\" text-anchor=\"middle\" font-size=\"12\" fill=\"var(--text)\">b</text><line x1=\"60\" y1=\"44\" x2=\"148\" y2=\"58\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyf-arrow)\"/><line x1=\"60\" y1=\"86\" x2=\"148\" y2=\"72\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyf-arrow)\"/><rect x=\"150\" y=\"40\" width=\"160\" height=\"50\" rx=\"10\" fill=\"var(--dark)\"/><text x=\"230\" y=\"63\" text-anchor=\"middle\" font-size=\"12\" fill=\"#ffffff\">def add(a, b)</text><text x=\"230\" y=\"79\" text-anchor=\"middle\" font-size=\"9\" fill=\"rgba(255,255,255,0.65)\">function</text><line x1=\"312\" y1=\"65\" x2=\"360\" y2=\"65\" stroke=\"var(--text-muted)\" stroke-width=\"1.5\" marker-end=\"url(#pyf-arrow)\"/><rect x=\"362\" y=\"46\" width=\"90\" height=\"38\" rx=\"9\" fill=\"var(--card)\" stroke=\"var(--accent-green)\" stroke-width=\"1.5\"/><text x=\"407\" y=\"69\" text-anchor=\"middle\" font-size=\"12\" fill=\"var(--text)\">return</text></svg>",
+      "caption": "Pass arguments in, get a return value out — the same function works for any numbers."
+    },
+    {
+      "id": "p38",
+      "topicId": 9,
+      "type": "code",
+      "language": "python",
+      "code": "def add(a, b):\n    return a + b\n\nresult = add(10, 20)   # 30"
+    },
+
+    {
+      "id": "p39",
+      "topicId": 10,
+      "type": "heading",
+      "level": 1,
+      "text": "Quick Quiz"
+    },
+    {
+      "id": "p40",
+      "topicId": 10,
+      "type": "paragraph",
+      "muted": true,
+      "text": "Test what you learned in this module:"
+    },
+    {
+      "id": "p41",
+      "topicId": 10,
+      "type": "quiz",
+      "questions": [
+        {
+          "id": "q1",
+          "question": "How do you print text to the screen in Python?",
+          "options": ["echo(\"hi\")", "print(\"hi\")", "console.log(\"hi\")", "printf(\"hi\")"],
+          "correctIndex": 1,
+          "explanation": "print() is Python's built-in function for displaying output. echo and printf belong to other languages; console.log is JavaScript."
+        },
+        {
+          "id": "q2",
+          "question": "What type does the value 3.14 have in Python?",
+          "options": ["int", "str", "float", "bool"],
+          "correctIndex": 2,
+          "explanation": "Numbers with a decimal point are floats. Whole numbers like 25 are ints, and True/False are bools."
+        },
+        {
+          "id": "q3",
+          "question": "Which keyword runs a block only when a condition is false?",
+          "options": ["else", "elif", "then", "otherwise"],
+          "correctIndex": 0,
+          "explanation": "else handles the case when the if condition is False. elif checks an additional condition; then and otherwise aren't Python keywords."
+        },
+        {
+          "id": "q4",
+          "question": "What does a function's return statement do?",
+          "options": [
+            "Prints a value to the screen",
+            "Stops the whole program",
+            "Sends a result back to whoever called the function",
+            "Creates a new variable"
+          ],
+          "correctIndex": 2,
+          "explanation": "return hands a value back to the caller, so you can store or use the result. It ends the function, not the whole program."
+        }
+      ]
+    },
+    {
+      "id": "p42",
+      "topicId": 10,
+      "type": "callout",
+      "tone": "success",
+      "text": "That's the foundation of Python! From here you can move on to strings, lists, and building real programs."
+    }
+  ]
+}

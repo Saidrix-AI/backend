@@ -3,3 +3,6 @@ dist/
 .env
 *.log
 coverage/
+
+# Diagram E2E script artefacts (scripts/svg-e2e.ts)
+scripts/.e2e-out.*
