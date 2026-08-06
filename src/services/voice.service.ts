@@ -1,4 +1,4 @@
-import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
+import { AccessToken, AgentDispatchClient, RoomServiceClient } from "livekit-server-sdk";
 import { env } from "../config/env.js";
 import { assertLessonEnterable, getLectureByLessonId } from "./lecture.service.js";
 import { EnrollmentModel } from "../database/models/enrollment.model.js";
@@ -6,11 +6,23 @@ import { EnrollmentModel } from "../database/models/enrollment.model.js";
 // LiveKit's server API is HTTP(S) even when clients connect over ws(s).
 const livekitHost = env.LIVEKIT_URL.replace(/^ws/, "http");
 const roomService = new RoomServiceClient(livekitHost, env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
+const dispatchService = new AgentDispatchClient(
+  livekitHost,
+  env.LIVEKIT_API_KEY,
+  env.LIVEKIT_API_SECRET,
+);
 
 export interface VoiceSessionInput {
   courseId: string;
   lessonId: string;
 }
+
+/**
+ * The worker registers under this name (voice-service/app/worker.py), which
+ * turns LiveKit's automatic dispatch OFF for it: jobs come only from the
+ * explicit dispatches created below.
+ */
+const AGENT_NAME = "saidrix-tutor";
 
 /** LiveKit names every agent participant `agent-<jobId>`; students join as their user id. */
 function isAgent(identity: string): boolean {
@@ -18,29 +30,25 @@ function isAgent(identity: string): boolean {
 }
 
 /**
- * Makes sure the room the student is about to join will actually get a tutor.
+ * Asks for a tutor unless one is already in the room.
  *
- * LiveKit auto-dispatch only fires when a room is *created*. `createRoom` is
- * idempotent, so a room that exists but has no agent in it — which is what a
- * dropped dispatch leaves behind ("failed to send job request: no servers
- * available") — can never recover on its own: every re-entry reuses the same
- * agentless room until it times out, and the student sits in a silent
- * classroom. Deleting it first turns the next createRoom into a real creation,
- * and therefore a fresh dispatch.
+ * This replaces a delete-and-recreate hack. Automatic dispatch fires only when
+ * a room is *created*, so the only way to re-request a tutor used to be to
+ * delete the room — which raced the student's own `roomJoin` grant, because
+ * that silently auto-creates the room whenever it is missing. The loser of that
+ * race was a room with no metadata, and every agent dispatched into one read no
+ * metadata and left again: a classroom that never spoke, for the rest of its
+ * life. Explicit dispatch asks directly and destroys nothing, so a reconnect
+ * lands back on the live session instead of demolishing it.
  *
- * A room that already has its agent is left alone, so reconnecting (or a second
- * tab) still lands on the live session instead of killing it.
+ * The metadata travels on the *job*, which is what makes it independent of how
+ * the room came to exist.
  */
-async function ensureDispatchableRoom(roomName: string): Promise<void> {
-  const [existing] = await roomService.listRooms([roomName]).catch(() => []);
-  if (!existing) return;
-
+async function ensureTutorDispatched(roomName: string, session: string): Promise<void> {
   const participants = await roomService.listParticipants(roomName).catch(() => []);
   if (participants.some((p) => isAgent(p.identity))) return;
 
-  await roomService.deleteRoom(roomName).catch(() => {
-    /* already gone — createRoom below will make a fresh one anyway */
-  });
+  await dispatchService.createDispatch(roomName, AGENT_NAME, { metadata: session });
 }
 
 /**
@@ -73,14 +81,21 @@ export async function createVoiceSession(
   }
 
   const roomName = `voice_${userId}_${lessonId}`;
-  await ensureDispatchableRoom(roomName);
+  const session = JSON.stringify({
+    userId,
+    courseId,
+    lessonId,
+    language: lecture.language,
+    completed,
+  });
   await roomService.createRoom({
     name: roomName,
     emptyTimeout: 300,
     departureTimeout: 60,
     maxParticipants: 5,
-    metadata: JSON.stringify({ userId, courseId, lessonId, language: lecture.language, completed }),
+    metadata: session,
   });
+  await ensureTutorDispatched(roomName, session);
 
   const at = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, {
     identity: userId,

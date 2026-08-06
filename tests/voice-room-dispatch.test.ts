@@ -1,23 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * LiveKit auto-dispatch fires once, when a room is *created*. `createRoom` is
- * idempotent, so a room that exists with no agent in it — what a dropped job
- * request leaves behind — can never get a tutor: every re-entry reuses the same
- * agentless room until it times out, and the student sits in a silent class.
+ * The tutor is asked for explicitly, and the room is never destroyed.
  *
- * So the rule these tests pin down: rebuild the room when, and only when, it
- * exists without an agent.
+ * It used to ride room creation: automatic dispatch fires once, when a room is
+ * *created*, so the service deleted an agentless room to force a fresh job.
+ * That delete raced the student's own `roomJoin` grant, which silently
+ * auto-creates the room whenever it is missing — and an auto-created room has
+ * no metadata, so every agent dispatched into it read none and left again
+ * ("no voice-session metadata — ignoring"). One client blip and the classroom
+ * was mute for the rest of its life.
+ *
+ * So the rules these tests pin down: never delete the room, ask for a tutor
+ * only when one is not already there, and put the session on the dispatch so it
+ * does not depend on how the room came to exist.
  */
 const calls: string[] = [];
-let rooms: { name: string }[] = [];
+const dispatches: { room: string; agent: string; metadata?: string }[] = [];
 let participants: { identity: string }[] = [];
 
 vi.mock("livekit-server-sdk", () => ({
   RoomServiceClient: class {
     async listRooms() {
       calls.push("listRooms");
-      return rooms;
+      return [];
     }
     async listParticipants() {
       calls.push("listParticipants");
@@ -28,6 +34,12 @@ vi.mock("livekit-server-sdk", () => ({
     }
     async createRoom() {
       calls.push("createRoom");
+    }
+  },
+  AgentDispatchClient: class {
+    async createDispatch(room: string, agent: string, options?: { metadata?: string }) {
+      calls.push("createDispatch");
+      dispatches.push({ room, agent, metadata: options?.metadata });
     }
   },
   AccessToken: class {
@@ -57,6 +69,8 @@ vi.mock("../src/database/models/enrollment.model.js", () => ({
 
 const { createVoiceSession } = await import("../src/services/voice.service.js");
 
+const ROOM = "voice_507f1f77bcf86cd799439011_lesson-a";
+
 const start = () =>
   createVoiceSession("507f1f77bcf86cd799439011", "s@example.com", {
     courseId: "",
@@ -66,7 +80,7 @@ const start = () =>
 beforeEach(() => {
   calls.length = 0;
   gateCalls.length = 0;
-  rooms = [];
+  dispatches.length = 0;
   participants = [];
 });
 
@@ -81,39 +95,58 @@ describe("voice room dispatch", () => {
     expect(gateCalls).toEqual([["507f1f77bcf86cd799439011", "lesson-a"]]);
   });
 
-  it("creates the room on a first entry, with nothing to clean up", async () => {
+  it("creates the room and asks for a tutor on a first entry", async () => {
     await start();
-    expect(calls).toEqual(["listRooms", "createRoom"]);
+    expect(calls).toEqual(["createRoom", "listParticipants", "createDispatch"]);
   });
 
-  it("rebuilds a room left without an agent, so dispatch fires again", async () => {
-    rooms = [{ name: "voice_507f1f77bcf86cd799439011_lesson-a" }];
+  it("asks for a tutor again when the room was left without one", async () => {
     participants = [{ identity: "507f1f77bcf86cd799439011" }];
 
     await start();
-    expect(calls).toEqual(["listRooms", "listParticipants", "deleteRoom", "createRoom"]);
+    expect(calls).toContain("createDispatch");
   });
 
   it("leaves a room that already has its tutor alone", async () => {
-    rooms = [{ name: "voice_507f1f77bcf86cd799439011_lesson-a" }];
     participants = [{ identity: "507f1f77bcf86cd799439011" }, { identity: "agent-AJ_abc123" }];
 
     await start();
-    expect(calls).not.toContain("deleteRoom");
-    expect(calls).toEqual(["listRooms", "listParticipants", "createRoom"]);
+    expect(calls).not.toContain("createDispatch");
   });
 
-  it("rebuilds an empty lingering room", async () => {
-    rooms = [{ name: "voice_507f1f77bcf86cd799439011_lesson-a" }];
-    participants = [];
+  /**
+   * The delete is the whole bug: it raced the client's own room auto-create and
+   * left behind a metadata-less room no agent would work in.
+   */
+  it("never deletes the room, in any state", async () => {
+    for (const state of [[], [{ identity: "507f1f77bcf86cd799439011" }]]) {
+      participants = state;
+      await start();
+    }
+    expect(calls).not.toContain("deleteRoom");
+  });
 
+  /**
+   * This is what makes an auto-created (metadata-less) room survivable: the
+   * agent reads the session off its job, not off the room.
+   */
+  it("carries the session on the dispatch, not just on the room", async () => {
     await start();
-    expect(calls).toContain("deleteRoom");
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]!.room).toBe(ROOM);
+    expect(dispatches[0]!.agent).toBe("saidrix-tutor");
+    expect(JSON.parse(dispatches[0]!.metadata!)).toEqual({
+      userId: "507f1f77bcf86cd799439011",
+      courseId: "",
+      lessonId: "lesson-a",
+      language: "en",
+      completed: false,
+    });
   });
 
   it("still mints a joinable session", async () => {
     const session = await start();
-    expect(session.roomName).toBe("voice_507f1f77bcf86cd799439011_lesson-a");
+    expect(session.roomName).toBe(ROOM);
     expect(session.token).toBe("test-token");
   });
 });
