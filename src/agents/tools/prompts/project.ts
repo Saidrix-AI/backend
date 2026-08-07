@@ -58,13 +58,34 @@ export const deleteProjectTool: OpenAI.Chat.ChatCompletionFunctionTool = {
   function: {
     name: "delete_project",
     description:
-      "Permanently delete one of the student's projects. Only call this after the student has explicitly confirmed the deletion in their most recent message.",
+      "Permanently delete ONE of the student's projects. Only call this after the student has explicitly confirmed the deletion in their most recent message. To remove several projects at once, use delete_projects instead — repeating this tool is capped per turn and the rest will be refused.",
     parameters: {
       type: "object",
       properties: {
         projectId: { type: "string", description: "The project id from list_projects" },
       },
       required: ["projectId"],
+    },
+  },
+};
+
+/** Bulk counterpart — see the note on deleteRoutineItemsTool for why it exists. */
+export const deleteProjectsTool: OpenAI.Chat.ChatCompletionFunctionTool = {
+  type: "function",
+  function: {
+    name: "delete_projects",
+    description:
+      "Permanently delete MANY projects in ONE call — use this whenever the student asks to delete all their projects or more than one of them. Call list_projects first to get the ids, then pass every id to remove here. ALWAYS prefer this over repeating delete_project, which is capped per turn. Only call it after the student has explicitly confirmed in their most recent message — say how many projects will go, and wait for their answer.",
+    parameters: {
+      type: "object",
+      properties: {
+        projectIds: {
+          type: "array",
+          description: "The project ids to delete, from list_projects",
+          items: { type: "string" },
+        },
+      },
+      required: ["projectIds"],
     },
   },
 };

@@ -3,6 +3,7 @@ import * as projectService from "../../services/project.service.js";
 import {
   createProjectTool,
   deleteProjectTool,
+  deleteProjectsTool,
   listProjectsTool,
   updateProjectTool,
 } from "./prompts/project.js";
@@ -112,4 +113,47 @@ const deleteProject: RegisteredTool = {
   },
 };
 
-export const projectTools = [listProjects, createProject, updateProject, deleteProject];
+/** Cap on one bulk call. Matches the routine bulk tools; well past any real library. */
+const MAX_BULK_DELETE = 150;
+
+const deleteManyArgs = z.object({
+  projectIds: z.array(z.string().min(1)).min(1).max(MAX_BULK_DELETE),
+});
+
+const deleteProjects: RegisteredTool = {
+  schema: deleteProjectsTool,
+  runningLabel: (a) => {
+    const n = Array.isArray(a.projectIds) ? a.projectIds.length : 0;
+    return `Deleting ${n || "several"} project${n === 1 ? "" : "s"}`;
+  },
+  run: async (ctx, args) => {
+    const parsed = deleteManyArgs.safeParse(args);
+    if (!parsed.success) return invalidArgs("Couldn't delete projects", parsed.error);
+    try {
+      // Counted from what the database removed, not from the id list: ids the
+      // student no longer owns are skipped, and reporting the requested number
+      // would overstate what happened.
+      const removed = await projectService.deleteProjects(ctx.userId, parsed.data.projectIds);
+      const asked = parsed.data.projectIds.length;
+      return {
+        ok: true,
+        changed: "project",
+        label: removed === 0 ? "Nothing to delete" : `${removed} project${removed === 1 ? "" : "s"} deleted`,
+        modelText:
+          removed === asked
+            ? `Deleted ${removed} project${removed === 1 ? "" : "s"}. Confirm to the student what went.`
+            : `Deleted ${removed} of the ${asked} ids given — the rest were already gone. Tell the student what actually went.`,
+      };
+    } catch (err) {
+      return failure("Couldn't delete projects", err);
+    }
+  },
+};
+
+export const projectTools = [
+  listProjects,
+  createProject,
+  updateProject,
+  deleteProject,
+  deleteProjects,
+];

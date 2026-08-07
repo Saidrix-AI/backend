@@ -115,9 +115,12 @@ const DESTRUCTIVE_TOOLS = new Set([
   "delete_course",
   "delete_project",
   "delete_routine_item",
-  // Bulk delete counts as ONE call however many ids it carries. That is the
-  // point of it: "clear my routine" is a single deliberate act, and forcing it
-  // through the per-item tool is what used to collide with this cap.
+  // The bulk tools count as ONE call however many ids they carry. That is the
+  // point of them: "delete all my projects" is a single deliberate act, and
+  // forcing it through the per-item tools is what used to collide with this
+  // cap — the request could not be honoured at all.
+  "delete_courses",
+  "delete_projects",
   "delete_routine_items",
 ]);
 const MAX_DESTRUCTIVE_CALLS_PER_TURN = 3;
@@ -130,9 +133,9 @@ const MAX_DESTRUCTIVE_CALLS_PER_TURN = 3;
  */
 const DELETION_CAP_MESSAGE =
   `You've hit the limit of ${MAX_DESTRUCTIVE_CALLS_PER_TURN} delete calls for this turn, so nothing further ` +
-  "was deleted. Do NOT retry. If the student asked you to remove many routine items at once, that is what " +
-  "delete_routine_items is for — one call carrying every id. Tell them plainly what you did and did not " +
-  "delete, and ask them to confirm before you try again.";
+  "was deleted. Do NOT retry. If the student asked you to remove many things at once, use the bulk tool for " +
+  "that kind — delete_courses, delete_projects or delete_routine_items — in ONE call carrying every id. Tell " +
+  "them plainly what you did and did not delete, and ask them to confirm before you try again.";
 
 /**
  * Streams the tutor reply token-by-token with tool use.

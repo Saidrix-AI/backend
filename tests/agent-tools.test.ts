@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildToolset } from "../src/agents/tools/registry.js";
 import { CourseModel } from "../src/database/models/course.model.js";
 import { LearningPathModel } from "../src/database/models/learningPath.model.js";
+import { ProjectModel } from "../src/database/models/project.model.js";
 import { RoutineItemModel } from "../src/database/models/routineItem.model.js";
 import { UserModel } from "../src/database/models/user.model.js";
 import { createCourse } from "../src/services/course.service.js";
@@ -34,12 +35,15 @@ afterAll(async () => {
 describe("buildToolset", () => {
   it("gates db tools on userId and web search on searchEnabled", () => {
     expect(buildToolset({ searchEnabled: false }).size).toBe(0);
-    expect(buildToolset({ userId: userA, searchEnabled: false }).size).toBe(22);
+    expect(buildToolset({ userId: userA, searchEnabled: false }).size).toBe(24);
     const withSearch = buildToolset({ userId: userA, searchEnabled: true });
-    expect(withSearch.size).toBe(23);
+    expect(withSearch.size).toBe(25);
     expect(withSearch.has("web_search")).toBe(true);
-    // Bulk delete: without it "clear my routine" had to be one call per item,
-    // which the destructive-call cap refuses.
+    // Bulk deletes: without them "delete all my projects" had to be one call
+    // per item, which the destructive-call cap refuses — so the request could
+    // not be honoured at all.
+    expect(withSearch.has("delete_courses")).toBe(true);
+    expect(withSearch.has("delete_projects")).toBe(true);
     expect(withSearch.has("delete_routine_items")).toBe(true);
     expect(withSearch.has("generate_course")).toBe(true);
     expect(withSearch.has("propose_courses")).toBe(true);
@@ -444,3 +448,104 @@ describe("organize_learning_path tool", () => {
     expect(outcome.modelText).toContain("couldn't find at least two");
   });
 });
+
+/**
+ * The gap that made "delete all 33 projects" impossible: the only delete tools
+ * took a single id, so honouring it meant 33 calls — and the chat agent's
+ * destructive-call cap refuses everything past three, leaving the job undone
+ * with nothing deleted. One call for one intent is what the cap can allow.
+ */
+describe("bulk deletes", () => {
+  it("removes many projects in one call and reports what actually went", async () => {
+    await ProjectModel.deleteMany({});
+    const mine = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        ProjectModel.create({ userId: new Types.ObjectId(userA), title: `P${i}` }),
+      ),
+    );
+    const alreadyGone = new Types.ObjectId().toString();
+
+    const outcome = await run("delete_projects", {
+      projectIds: [...mine.map((p) => String(p._id)), alreadyGone],
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.changed).toBe("project");
+    // Counted from the database, not from the id list — the sixth id was never
+    // there, and claiming six deletions would be a lie to the student.
+    expect(outcome.label).toBe("5 projects deleted");
+    expect(outcome.modelText).toContain("Deleted 5 of the 6");
+    expect(await ProjectModel.countDocuments({})).toBe(0);
+  });
+
+  it("removes many courses in one call", async () => {
+    await CourseModel.deleteMany({});
+    const made = await Promise.all([
+      createCourse(userA, { title: "One", level: "Beginner" }),
+      createCourse(userA, { title: "Two", level: "Beginner" }),
+      createCourse(userA, { title: "Three", level: "Beginner" }),
+    ]);
+
+    const outcome = await run("delete_courses", { courseIds: made.map((c) => String(c._id)) });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.label).toBe("3 courses deleted");
+    // The student has to hear that a course delete leaves these behind.
+    expect(outcome.modelText).toContain("projects and routine items were NOT removed");
+    expect(await CourseModel.countDocuments({})).toBe(0);
+  });
+
+  it("removes many routine items in one call", async () => {
+    await RoutineItemModel.deleteMany({});
+    const items = await Promise.all(
+      Array.from({ length: 4 }, (_, i) =>
+        createRoutineItem(userA, { type: "class", title: `Lesson ${i}`, date: "2026-09-01" }),
+      ),
+    );
+
+    const outcome = await run("delete_routine_items", {
+      itemIds: items.map((i) => String(i._id)),
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.changed).toBe("routine");
+    expect(outcome.label).toBe("4 routine items removed");
+    expect(await RoutineItemModel.countDocuments({})).toBe(0);
+  });
+
+  // The ownership boundary matters more here than anywhere: one call can carry
+  // 150 ids, so a filter that trusted them would be a mass-delete primitive.
+  it("cannot touch another student's rows, whatever ids are passed", async () => {
+    await ProjectModel.deleteMany({});
+    await CourseModel.deleteMany({});
+    await RoutineItemModel.deleteMany({});
+
+    const theirProject = await ProjectModel.create({
+      userId: new Types.ObjectId(userB),
+      title: "Not yours",
+    });
+    const theirCourse = await createCourse(userB, { title: "Not yours", level: "Beginner" });
+    const theirItem = await createRoutineItem(userB, {
+      type: "class",
+      title: "Not yours",
+      date: "2026-09-01",
+    });
+
+    // userA asking to delete userB's rows.
+    const p = await run("delete_projects", { projectIds: [String(theirProject._id)] });
+    const c = await run("delete_courses", { courseIds: [String(theirCourse._id)] });
+    const r = await run("delete_routine_items", { itemIds: [String(theirItem._id)] });
+
+    // Reported honestly as "nothing went" rather than erroring...
+    expect([p.label, c.label, r.label]).toEqual([
+      "Nothing to delete",
+      "Nothing to delete",
+      "Nothing to remove",
+    ]);
+    // ...and everything is still there.
+    expect(await ProjectModel.countDocuments({})).toBe(1);
+    expect(await CourseModel.countDocuments({})).toBe(1);
+    expect(await RoutineItemModel.countDocuments({})).toBe(1);
+  });
+})
+;

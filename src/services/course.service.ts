@@ -229,3 +229,23 @@ export async function deleteCourse(userId: string, id: string) {
   await findOwned(userId, id);
   await CourseModel.deleteOne({ _id: id, userId });
 }
+
+/**
+ * Deletes many courses in ONE operation, returning how many actually went.
+ *
+ * Mirrors routine.service.deleteRoutineItems, and exists for the same reason:
+ * the single-id delete made "remove all my courses" cost one tool call per
+ * course, which the chat agent's destructive-call cap refuses outright — so the
+ * request could not be honoured at all.
+ *
+ * Leaves the same things behind that deleteCourse does (lectures, progress,
+ * path entries). Cascading here and not there would make bulk and single
+ * deletes mean different things, which is worse than either behaviour on its
+ * own; if that cleanup is wanted it belongs in both.
+ */
+export async function deleteCourses(userId: string, ids: string[]): Promise<number> {
+  const valid = ids.filter((id) => Types.ObjectId.isValid(id));
+  if (valid.length === 0) return 0;
+  const res = await CourseModel.deleteMany({ _id: { $in: valid }, userId });
+  return res.deletedCount ?? 0;
+}

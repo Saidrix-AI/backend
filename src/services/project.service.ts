@@ -132,3 +132,22 @@ export async function deleteProject(userId: string, id: string) {
   await findOwned(userId, id);
   await ProjectModel.deleteOne({ _id: id, userId });
 }
+
+/**
+ * Deletes many projects in ONE operation, returning how many actually went.
+ *
+ * Mirrors routine.service.deleteRoutineItems, and exists for the same reason:
+ * the single-id delete made "remove all my projects" cost one tool call per
+ * project, which the chat agent's destructive-call cap refuses outright — so
+ * the request could not be honoured at all.
+ *
+ * `userId` is part of the filter rather than checked per id, so ids belonging
+ * to someone else delete nothing instead of erroring, with no lookup in between
+ * to race against.
+ */
+export async function deleteProjects(userId: string, ids: string[]): Promise<number> {
+  const valid = ids.filter((id) => Types.ObjectId.isValid(id));
+  if (valid.length === 0) return 0;
+  const res = await ProjectModel.deleteMany({ _id: { $in: valid }, userId });
+  return res.deletedCount ?? 0;
+}

@@ -85,13 +85,34 @@ export const deleteCourseTool: OpenAI.Chat.ChatCompletionFunctionTool = {
   function: {
     name: "delete_course",
     description:
-      "Permanently delete one of the student's courses. Only call this after the student has explicitly confirmed the deletion in their most recent message.",
+      "Permanently delete ONE of the student's courses. Only call this after the student has explicitly confirmed the deletion in their most recent message. To remove several courses at once, use delete_courses instead — repeating this tool is capped per turn and the rest will be refused.",
     parameters: {
       type: "object",
       properties: {
         courseId: { type: "string", description: "The course id from list_courses" },
       },
       required: ["courseId"],
+    },
+  },
+};
+
+/** Bulk counterpart — see the note on deleteRoutineItemsTool for why it exists. */
+export const deleteCoursesTool: OpenAI.Chat.ChatCompletionFunctionTool = {
+  type: "function",
+  function: {
+    name: "delete_courses",
+    description:
+      "Permanently delete MANY courses in ONE call — use this whenever the student asks to delete all their courses or more than one of them. Call list_courses first to get the ids, then pass every id to remove here. ALWAYS prefer this over repeating delete_course, which is capped per turn. Deleting a course does NOT delete its projects or routine items, so say so and offer to clear those too. Only call it after the student has explicitly confirmed in their most recent message — say how many courses will go, and wait for their answer.",
+    parameters: {
+      type: "object",
+      properties: {
+        courseIds: {
+          type: "array",
+          description: "The course ids to delete, from list_courses",
+          items: { type: "string" },
+        },
+      },
+      required: ["courseIds"],
     },
   },
 };

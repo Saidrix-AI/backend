@@ -6,6 +6,7 @@ import { LEVELS } from "../../validation/course.schema.js";
 import {
   createCourseTool,
   deleteCourseTool,
+  deleteCoursesTool,
   listCoursesTool,
   organizeLearningPathTool,
   updateCourseTool,
@@ -212,4 +213,49 @@ const organizeLearningPath: RegisteredTool = {
   },
 };
 
-export const courseTools = [listCourses, createCourse, updateCourse, deleteCourse, organizeLearningPath];
+/** Cap on one bulk call. Matches the routine bulk tools; well past any real catalog. */
+const MAX_BULK_DELETE = 150;
+
+const deleteManyArgs = z.object({
+  courseIds: z.array(z.string().min(1)).min(1).max(MAX_BULK_DELETE),
+});
+
+const deleteCourses: RegisteredTool = {
+  schema: deleteCoursesTool,
+  runningLabel: (a) => {
+    const n = Array.isArray(a.courseIds) ? a.courseIds.length : 0;
+    return `Deleting ${n || "several"} course${n === 1 ? "" : "s"}`;
+  },
+  run: async (ctx, args) => {
+    const parsed = deleteManyArgs.safeParse(args);
+    if (!parsed.success) return invalidArgs("Couldn't delete courses", parsed.error);
+    try {
+      // Counted from what the database removed, not from the id list: ids the
+      // student no longer owns are skipped, and reporting the requested number
+      // would overstate what happened.
+      const removed = await courseService.deleteCourses(ctx.userId, parsed.data.courseIds);
+      const asked = parsed.data.courseIds.length;
+      return {
+        ok: true,
+        changed: "course",
+        label: removed === 0 ? "Nothing to delete" : `${removed} course${removed === 1 ? "" : "s"} deleted`,
+        modelText:
+          (removed === asked
+            ? `Deleted ${removed} course${removed === 1 ? "" : "s"}.`
+            : `Deleted ${removed} of the ${asked} ids given — the rest were already gone.`) +
+          " Their projects and routine items were NOT removed; say so and offer to clear those too.",
+      };
+    } catch (err) {
+      return failure("Couldn't delete courses", err);
+    }
+  },
+};
+
+export const courseTools = [
+  listCourses,
+  createCourse,
+  updateCourse,
+  deleteCourse,
+  deleteCourses,
+  organizeLearningPath,
+];
