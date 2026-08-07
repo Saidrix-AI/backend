@@ -1,13 +1,15 @@
 import { Schema, model, Types, type InferSchemaType } from "mongoose";
 import { PLAN_IDS } from "../../config/plans.js";
-import { LANGUAGES } from "../../validation/language.js";
-
 /**
- * Languages a student may say they are comfortable in. Wider than
- * validation/language.ts's LANGUAGES, which is the set the app can generate a
- * course in — see the note on `preferredLanguages` below.
+ * Languages a student may say they are comfortable in — a fixed picker list,
+ * unlike the open content-language set in validation/language.ts. Recorded
+ * only; picking one changes nothing about what gets generated. See the note on
+ * `preferredLanguages` below.
+ *
+ * "bn-latn" (Banglish) was removed 2026-08-07 — it is Bangla, not a separate
+ * language. scripts/migrate-drop-banglish.ts folds stored values into "bn".
  */
-export const PREFERRED_LANGUAGES = ["en", "bn", "bn-latn", "hi", "ar"] as const;
+export const PREFERRED_LANGUAGES = ["en", "bn", "hi", "es", "ar"] as const;
 
 const userSchema = new Schema(
   {
@@ -62,7 +64,7 @@ const userSchema = new Schema(
      * that keep their answer — toProfile falls back to it when the array is
      * empty. Nothing writes it any more.
      */
-    preferredLanguage: { type: String, enum: [...LANGUAGES, ""], default: "" },
+    preferredLanguage: { type: String, default: "" },
     /**
      * Where they heard about Saidrix. Lives here rather than on LearnerProfile on
      * purpose: it is marketing attribution and must never reach a prompt, and

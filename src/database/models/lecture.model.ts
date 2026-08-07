@@ -1,5 +1,5 @@
 import { Schema, model, type InferSchemaType } from "mongoose";
-import { DEFAULT_LANGUAGE, LANGUAGES } from "../../validation/language.js";
+import { DEFAULT_LANGUAGE } from "../../validation/language.js";
 
 const outlineItemSchema = new Schema(
   {
@@ -21,7 +21,8 @@ const lectureSchema = new Schema(
   {
     lessonId: { type: String, required: true, unique: true },
     version: { type: Number, default: 1 },
-    language: { type: String, enum: [...LANGUAGES], default: DEFAULT_LANGUAGE },
+    /** Open set, not an enum — see course.model.ts and validation/language.ts. */
+    language: { type: String, default: DEFAULT_LANGUAGE },
     /**
      * Which lecture-maker lane wrote this — "setup" means an installation guide
      * with a downloads section and a closing checklist instead of an exam.

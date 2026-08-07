@@ -20,7 +20,8 @@
     "svg:metrics": "tsx scripts/gen-font-metrics.ts",
     "svg:e2e": "tsx scripts/svg-e2e.ts",
     "icons:backfill": "tsx scripts/backfill-icons.ts",
-    "migrate:active-paths": "node dist/scripts/migrate-active-paths.js"
+    "migrate:active-paths": "node dist/scripts/migrate-active-paths.js",
+    "migrate:drop-banglish": "tsx scripts/migrate-drop-banglish.ts"
   },
   "dependencies": {
     "@langchain/anthropic": "^0.3.21",

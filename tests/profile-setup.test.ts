@@ -103,7 +103,7 @@ describe("profile setup fields", () => {
     const a = await register("setupstudent");
     const res = await patchProfile(a, {
       address: "Mirpur, Dhaka",
-      preferredLanguages: ["bn-latn", "en"],
+      preferredLanguages: ["bn", "en"],
       occupation: "student",
       operatingSystem: "windows",
       educationLevel: "undergrad",
@@ -115,7 +115,7 @@ describe("profile setup fields", () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.data.profile.address).toBe("Mirpur, Dhaka");
-    expect(res.body.data.profile.preferredLanguages).toEqual(["bn-latn", "en"]);
+    expect(res.body.data.profile.preferredLanguages).toEqual(["bn", "en"]);
     expect(res.body.data.profile.learner).toMatchObject({
       institutionName: "BUET",
       studyStartYear: 2022,

@@ -107,6 +107,17 @@ const generateCourse: RegisteredTool = {
           ...pathBrief,
           ...(assessed ? { profile: assessed.profile } : {}),
           ...(intake ? { language: intake.language } : {}),
+          // The intake's brief: where to start, what not to re-teach, whether
+          // the student owes a setup lesson, and how long they can sit down
+          // for. `profile` says what they know; this says what to do about it.
+          ...(intake?.report
+            ? {
+                ...(intake.report.startFrom ? { startFrom: intake.report.startFrom } : {}),
+                ...(intake.report.skip?.length ? { skip: intake.report.skip } : {}),
+                needsSetupLesson: Boolean(intake.report.needsSetupLesson),
+              }
+            : {}),
+          ...(intake?.dailyMinutes ? { dailyMinutes: intake.dailyMinutes } : {}),
           ...(learner ? { learner } : {}),
         },
         pathMeta,
