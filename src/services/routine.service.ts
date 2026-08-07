@@ -66,3 +66,22 @@ export async function deleteRoutineItem(userId: string, id: string) {
   await findOwned(userId, id);
   await RoutineItemModel.deleteOne({ _id: id, userId });
 }
+
+/**
+ * Deletes many items in ONE operation, and reports how many actually went.
+ *
+ * Exists because "clear my routine" had no way to happen: the only delete took
+ * a single id, so emptying a 50-item schedule meant fifty tool calls, which the
+ * chat agent's destructive-call cap (correctly) refuses to run. One call for
+ * one intent is both safer and the only shape the cap can allow.
+ *
+ * `userId` is part of the filter rather than checked per item — a caller
+ * passing someone else's ids deletes nothing rather than erroring, and there is
+ * no lookup to race against in between.
+ */
+export async function deleteRoutineItems(userId: string, ids: string[]): Promise<number> {
+  const valid = ids.filter((id) => Types.ObjectId.isValid(id));
+  if (valid.length === 0) return 0;
+  const res = await RoutineItemModel.deleteMany({ _id: { $in: valid }, userId });
+  return res.deletedCount ?? 0;
+}

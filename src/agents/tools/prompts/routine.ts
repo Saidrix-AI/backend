@@ -215,13 +215,40 @@ export const deleteRoutineItemTool: OpenAI.Chat.ChatCompletionFunctionTool = {
   function: {
     name: "delete_routine_item",
     description:
-      "Permanently delete an item from the student's routine. Only call this after the student has explicitly confirmed the deletion in their most recent message.",
+      "Permanently delete ONE item from the student's routine. Only call this after the student has explicitly confirmed the deletion in their most recent message. To remove several items — or to clear the routine — use delete_routine_items instead; repeating this tool is capped and will be refused.",
     parameters: {
       type: "object",
       properties: {
         itemId: { type: "string", description: "The item id from list_routine" },
       },
       required: ["itemId"],
+    },
+  },
+};
+
+/**
+ * The bulk counterpart. Without it there was no way to honour "clear my
+ * routine": the single-item tool had to be called once per item, and the chat
+ * agent's destructive-call cap refuses a run like that — correctly, since it
+ * cannot tell a deliberate clear-out from a runaway loop. One call for one
+ * intent is what makes the difference legible.
+ */
+export const deleteRoutineItemsTool: OpenAI.Chat.ChatCompletionFunctionTool = {
+  type: "function",
+  function: {
+    name: "delete_routine_items",
+    description:
+      `Permanently delete MANY routine items in ONE call — use this whenever the student asks to clear their routine, remove a whole course's schedule, or delete more than one item. Call list_routine first to get the ids, then pass every id to remove here (up to ${MAX_BULK_ITEMS}). ALWAYS prefer this over repeating delete_routine_item, which is capped per turn. Only call it after the student has explicitly confirmed the deletion in their most recent message — say how many items will go, and wait for their answer.`,
+    parameters: {
+      type: "object",
+      properties: {
+        itemIds: {
+          type: "array",
+          description: `The ids to delete, from list_routine (up to ${MAX_BULK_ITEMS})`,
+          items: { type: "string" },
+        },
+      },
+      required: ["itemIds"],
     },
   },
 };

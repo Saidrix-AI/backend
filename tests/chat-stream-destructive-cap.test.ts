@@ -8,18 +8,20 @@ import type { RegisteredTool } from "../src/agents/tools/types.js";
  * dozens of failed calls with a bad id, then (once it had real ids from
  * list_routine) a batch that deleted most of the routine.
  *
- * This drives streamChatAgent() directly with a fake OpenAI-compatible client
- * that emits an oversized batch of delete_routine_item calls in one
- * completion, and asserts the MAX_DESTRUCTIVE_CALLS_PER_TURN cap in
- * stream.ts stops the underlying tool from running past the limit — without
- * touching Mongo or a real model.
+ * A later report showed the guard itself misbehaving: a student who asked to
+ * clear their whole routine got three deletions and then forty-odd identical
+ * "Stopped — too many deletions in one turn" chips, because every blocked call
+ * rendered its own result and the model kept re-issuing the batch. So this also
+ * pins the SHAPE of the refusal: one notice, and no further tool rounds.
+ *
+ * Drives streamChatAgent() directly with a fake OpenAI-compatible client, so
+ * there is no Mongo and no real model.
  */
 
-const deleteRun = vi.fn(async (_ctx, args: Record<string, unknown>) => ({
-  ok: true,
-  changed: "routine" as const,
-  label: `"${args.itemId}" removed from routine`,
-  modelText: `Deleted routine item ${String(args.itemId)}.`,
+const mocks = vi.hoisted(() => ({
+  create: vi.fn(),
+  deleteRun: vi.fn(),
+  deleteManyRun: vi.fn(),
 }));
 
 const deleteRoutineItemTool: RegisteredTool = {
@@ -32,11 +34,28 @@ const deleteRoutineItemTool: RegisteredTool = {
     },
   },
   runningLabel: () => "Deleting routine item",
-  run: deleteRun,
+  run: mocks.deleteRun,
+};
+
+const deleteRoutineItemsTool: RegisteredTool = {
+  schema: {
+    type: "function",
+    function: {
+      name: "delete_routine_items",
+      description: "test stub",
+      parameters: { type: "object", properties: { itemIds: { type: "array" } } },
+    },
+  },
+  runningLabel: () => "Removing routine items",
+  run: mocks.deleteManyRun,
 };
 
 vi.mock("../src/agents/tools/registry.js", () => ({
-  buildToolset: () => new Map([["delete_routine_item", deleteRoutineItemTool]]),
+  buildToolset: () =>
+    new Map([
+      ["delete_routine_item", deleteRoutineItemTool],
+      ["delete_routine_items", deleteRoutineItemsTool],
+    ]),
 }));
 
 // The router's LLM-based classifier would otherwise fire a second model call
@@ -80,29 +99,10 @@ function asyncIterableOf(chunks: unknown[]) {
 
 vi.mock("../src/agents/llm.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/agents/llm.js")>();
-
-  // Turn 1: a burst of 10 delete_routine_item calls with bad-looking ids —
-  // stands in for the observed "hallucinated batch" turn. Turn 2: a plain
-  // text answer, ending the loop.
-  const create = vi
-    .fn()
-    .mockResolvedValueOnce(
-      asyncIterableOf([
-        toolCallChunk(
-          Array.from({ length: 10 }, (_, i) => ({
-            id: `call_${i}`,
-            name: "delete_routine_item",
-            args: JSON.stringify({ itemId: `item-${i}` }),
-          })),
-        ),
-      ]),
-    )
-    .mockResolvedValueOnce(asyncIterableOf([contentChunk("Done.")]));
-
   return {
     ...actual,
     getOpenAICompatClient: () => ({
-      client: { chat: { completions: { create } } },
+      client: { chat: { completions: { create: mocks.create } } },
       model: "test-model",
     }),
   };
@@ -110,32 +110,132 @@ vi.mock("../src/agents/llm.js", async (importOriginal) => {
 
 const { streamChatAgent } = await import("../src/agents/chat-agent/stream.js");
 
+type ToolResult = { type: "tool_result"; ok: boolean; label: string; name: string };
+
+async function collect(message: string) {
+  const events = [];
+  for await (const ev of streamChatAgent([], message, { userId: "u1" })) events.push(ev);
+  return events;
+}
+
+function reset() {
+  mocks.create.mockReset();
+  mocks.deleteRun.mockReset().mockImplementation(async (_ctx, args: Record<string, unknown>) => ({
+    ok: true,
+    changed: "routine" as const,
+    label: `"${String(args.itemId)}" removed from routine`,
+    modelText: `Deleted routine item ${String(args.itemId)}.`,
+  }));
+  mocks.deleteManyRun
+    .mockReset()
+    .mockImplementation(async (_ctx, args: Record<string, unknown>) => ({
+      ok: true,
+      changed: "routine" as const,
+      label: `${(args.itemIds as string[]).length} routine items removed`,
+      modelText: `Deleted ${(args.itemIds as string[]).length} routine items.`,
+    }));
+}
+
 describe("streamChatAgent destructive-call cap", () => {
-  it("stops delete_routine_item after MAX_DESTRUCTIVE_CALLS_PER_TURN, even when the model requests far more in one batch", async () => {
-    const events = [];
-    for await (const ev of streamChatAgent([], "delete this from my routine, please", {
-      userId: "u1",
-    })) {
-      events.push(ev);
-    }
+  it("runs only MAX_DESTRUCTIVE_CALLS_PER_TURN of an oversized batch", async () => {
+    reset();
+    mocks.create
+      .mockResolvedValueOnce(
+        asyncIterableOf([
+          toolCallChunk(
+            Array.from({ length: 10 }, (_, i) => ({
+              id: `call_${i}`,
+              name: "delete_routine_item",
+              args: JSON.stringify({ itemId: `item-${i}` }),
+            })),
+          ),
+        ]),
+      )
+      .mockResolvedValueOnce(asyncIterableOf([contentChunk("Done.")]));
 
-    const results = events.filter((e) => e.type === "tool_result") as Array<{
-      type: "tool_result";
-      ok: boolean;
-      label: string;
-    }>;
+    const events = await collect("delete this from my routine, please");
+    const results = events.filter((e) => e.type === "tool_result") as ToolResult[];
 
-    expect(results).toHaveLength(10);
+    // Only the first few reached the tool implementation.
+    expect(mocks.deleteRun).toHaveBeenCalledTimes(3);
+    expect(results.filter((r) => r.ok)).toHaveLength(3);
+  });
 
-    // Only the first few actually reached the tool implementation...
-    expect(deleteRun).toHaveBeenCalledTimes(3);
+  // The regression behind the forty-odd identical chips.
+  it("shows the refusal ONCE however many calls are blocked", async () => {
+    reset();
+    mocks.create
+      .mockResolvedValueOnce(
+        asyncIterableOf([
+          toolCallChunk(
+            Array.from({ length: 50 }, (_, i) => ({
+              id: `call_${i}`,
+              name: "delete_routine_item",
+              args: JSON.stringify({ itemId: `item-${i}` }),
+            })),
+          ),
+        ]),
+      )
+      .mockResolvedValueOnce(asyncIterableOf([contentChunk("I stopped after three.")]));
 
-    // ...the rest were short-circuited before touching the database, with a
-    // result the model (and, through it, the student) can see clearly.
-    const ran = results.slice(0, 3);
-    const blocked = results.slice(3);
-    expect(ran.every((r) => r.ok)).toBe(true);
-    expect(blocked.every((r) => r.ok === false)).toBe(true);
-    expect(blocked.every((r) => r.label === "Stopped — too many deletions in one turn")).toBe(true);
+    const events = await collect("clear my whole routine");
+    const results = events.filter((e) => e.type === "tool_result") as ToolResult[];
+    const blocked = results.filter((r) => r.label === "Stopped — too many deletions in one turn");
+
+    expect(blocked).toHaveLength(1);
+    // 47 blocked calls must not each announce themselves.
+    expect(results).toHaveLength(4);
+    // And no "running" chip for work that never ran.
+    expect(events.filter((e) => e.type === "tool_call")).toHaveLength(3);
+  });
+
+  // Without this the model spends its remaining iterations re-issuing the
+  // batch it was just refused.
+  it("ends the tool phase once the cap trips", async () => {
+    reset();
+    mocks.create
+      .mockResolvedValueOnce(
+        asyncIterableOf([
+          toolCallChunk(
+            Array.from({ length: 10 }, (_, i) => ({
+              id: `call_${i}`,
+              name: "delete_routine_item",
+              args: JSON.stringify({ itemId: `item-${i}` }),
+            })),
+          ),
+        ]),
+      )
+      .mockResolvedValueOnce(asyncIterableOf([contentChunk("Stopped after three.")]));
+
+    await collect("delete everything");
+
+    expect(mocks.create).toHaveBeenCalledTimes(2);
+    const followUp = mocks.create.mock.calls[1]![0] as { tool_choice?: unknown };
+    expect(followUp.tool_choice).toBe("none");
+  });
+
+  // The capability gap that caused the incident: "delete all" had to be N calls.
+  it("lets one bulk call remove far more than the per-call cap", async () => {
+    reset();
+    const itemIds = Array.from({ length: 40 }, (_, i) => `item-${i}`);
+    mocks.create
+      .mockResolvedValueOnce(
+        asyncIterableOf([
+          toolCallChunk([
+            { id: "call_bulk", name: "delete_routine_items", args: JSON.stringify({ itemIds }) },
+          ]),
+        ]),
+      )
+      .mockResolvedValueOnce(asyncIterableOf([contentChunk("Cleared.")]));
+
+    const events = await collect("yes, clear all 40");
+    const results = events.filter((e) => e.type === "tool_result") as ToolResult[];
+
+    expect(mocks.deleteManyRun).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteManyRun.mock.calls[0]![1]).toEqual({ itemIds });
+    expect(results).toHaveLength(1);
+    expect(results[0]!.ok).toBe(true);
+    // One call, so the cap is nowhere near — and the turn is not halted.
+    expect(results[0]!.label).not.toContain("Stopped");
   });
 });

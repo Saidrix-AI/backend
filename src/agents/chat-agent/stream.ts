@@ -111,8 +111,28 @@ const MAX_TOOL_ITERATIONS = 5;
  * that deleted most of the student's routine in one turn. Capping the count
  * turns a runaway batch into a handful of no-ops instead of a wiped routine.
  */
-const DESTRUCTIVE_TOOLS = new Set(["delete_course", "delete_project", "delete_routine_item"]);
+const DESTRUCTIVE_TOOLS = new Set([
+  "delete_course",
+  "delete_project",
+  "delete_routine_item",
+  // Bulk delete counts as ONE call however many ids it carries. That is the
+  // point of it: "clear my routine" is a single deliberate act, and forcing it
+  // through the per-item tool is what used to collide with this cap.
+  "delete_routine_items",
+]);
 const MAX_DESTRUCTIVE_CALLS_PER_TURN = 3;
+
+/**
+ * What the model is told once the cap trips. It names the bulk tool, because
+ * the usual reason for hitting this is a legitimate "clear my routine" being
+ * attempted one item at a time — and a refusal that does not say how to do it
+ * properly just invites the same batch again next turn.
+ */
+const DELETION_CAP_MESSAGE =
+  `You've hit the limit of ${MAX_DESTRUCTIVE_CALLS_PER_TURN} delete calls for this turn, so nothing further ` +
+  "was deleted. Do NOT retry. If the student asked you to remove many routine items at once, that is what " +
+  "delete_routine_items is for — one call carrying every id. Tell them plainly what you did and did not " +
+  "delete, and ask them to confirm before you try again.";
 
 /**
  * Streams the tutor reply token-by-token with tool use.
@@ -194,13 +214,18 @@ export async function* streamChatAgent(
   // across iterations: list_routine ran in between the failed attempts and
   // the mass delete.
   let destructiveCalls = 0;
+  // Set the moment the cap trips. It forces the next round to be text-only, so
+  // the model explains itself instead of spending its remaining iterations
+  // re-issuing the batch that was just refused.
+  let deletionsHalted = false;
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
     const forceThisTurn = iteration === 0 && options.forceSearch && searchEnabled;
     // On the final allowed turn, disable tools so the model must produce a
     // text answer instead of requesting yet another search (which we'd have
-    // no round left to satisfy, leaving an empty reply).
-    const lastTurn = iteration === MAX_TOOL_ITERATIONS - 1;
+    // no round left to satisfy, leaving an empty reply). A tripped delete cap
+    // ends the tool phase the same way, and for the same reason.
+    const lastTurn = iteration === MAX_TOOL_ITERATIONS - 1 || deletionsHalted;
 
     const stream = await oai.client.chat.completions.create(
       {
@@ -299,6 +324,27 @@ export async function* streamChatAgent(
       }
 
       const eventId = `${iteration}-${index}`;
+
+      // Over the cap: don't touch the database at all. Every blocked call still
+      // needs a tool message or the next request is malformed, but the STUDENT
+      // sees one notice however many arrive — a batch of fifty refusals used to
+      // render fifty identical "Stopped" chips, which read as a crash rather
+      // than as a guard doing its job.
+      if (DESTRUCTIVE_TOOLS.has(call.name) && ++destructiveCalls > MAX_DESTRUCTIVE_CALLS_PER_TURN) {
+        messages.push({ role: "tool", tool_call_id: call.id, content: DELETION_CAP_MESSAGE });
+        if (!deletionsHalted) {
+          deletionsHalted = true;
+          yield {
+            type: "tool_result",
+            id: eventId,
+            name: call.name,
+            ok: false,
+            label: "Stopped — too many deletions in one turn",
+          };
+        }
+        continue;
+      }
+
       yield {
         type: "tool_call",
         id: eventId,
@@ -307,22 +353,7 @@ export async function* streamChatAgent(
         query: typeof args.query === "string" ? args.query : "",
       };
 
-      let outcome: Awaited<ReturnType<typeof tool.run>>;
-      if (DESTRUCTIVE_TOOLS.has(call.name) && ++destructiveCalls > MAX_DESTRUCTIVE_CALLS_PER_TURN) {
-        // Over the cap: don't touch the database at all. The model gets a
-        // message it can show the student, rather than a wall of silent
-        // deletions it keeps working through.
-        outcome = {
-          ok: false,
-          label: "Stopped — too many deletions in one turn",
-          modelText:
-            `You've hit the limit of ${MAX_DESTRUCTIVE_CALLS_PER_TURN} delete attempts for this turn ` +
-            "(some may have failed). Stop deleting now — tell the student exactly what you did and did " +
-            "not delete, and ask them to confirm before you delete anything else.",
-        };
-      } else {
-        outcome = await tool.run({ userId: options.userId ?? "" }, args);
-      }
+      const outcome = await tool.run({ userId: options.userId ?? "" }, args);
       if (outcome.sources) yield { type: "sources", sources: outcome.sources };
       if (outcome.proposal) yield { type: "course_proposal", id: eventId, courses: outcome.proposal };
       if (outcome.questions) yield { type: "ask_questions", id: eventId, questions: outcome.questions };

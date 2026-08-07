@@ -7,6 +7,7 @@ import {
   createRoutineItemsTool,
   createRoutineItemTool,
   deleteRoutineItemTool,
+  deleteRoutineItemsTool,
   listRoutineTool,
   MAX_BULK_ITEMS,
   ROUTINE_SETUP_MAX_COURSE_OPTIONS,
@@ -210,6 +211,43 @@ const deleteRoutineItem: RegisteredTool = {
   },
 };
 
+const deleteManyArgs = z.object({
+  itemIds: z.array(z.string().min(1)).min(1).max(MAX_BULK_ITEMS),
+});
+
+const deleteRoutineItems: RegisteredTool = {
+  schema: deleteRoutineItemsTool,
+  runningLabel: (a) => {
+    const n = Array.isArray(a.itemIds) ? a.itemIds.length : 0;
+    return `Removing ${n || "several"} routine item${n === 1 ? "" : "s"}`;
+  },
+  run: async (ctx, args) => {
+    const parsed = deleteManyArgs.safeParse(args);
+    if (!parsed.success) return invalidArgs("Couldn't delete routine items", parsed.error);
+    try {
+      // Counted from what the database actually removed, not from the id list:
+      // ids the student no longer owns are silently skipped, and reporting the
+      // requested number would overstate what happened.
+      const removed = await routineService.deleteRoutineItems(ctx.userId, parsed.data.itemIds);
+      const asked = parsed.data.itemIds.length;
+      return {
+        ok: true,
+        changed: "routine",
+        label:
+          removed === 0
+            ? "Nothing to remove"
+            : `${removed} routine item${removed === 1 ? "" : "s"} removed`,
+        modelText:
+          removed === asked
+            ? `Deleted ${removed} routine item${removed === 1 ? "" : "s"}. Confirm to the student what was cleared.`
+            : `Deleted ${removed} of the ${asked} ids given — the rest were already gone. Tell the student what actually went.`,
+      };
+    } catch (err) {
+      return failure("Couldn't delete routine items", err);
+    }
+  },
+};
+
 const setupArgs = z.object({ courseTitle: z.string().max(120).optional() });
 
 /**
@@ -263,5 +301,6 @@ export const routineTools = [
   createRoutineItems,
   updateRoutineItem,
   deleteRoutineItem,
+  deleteRoutineItems,
   askRoutineSetup,
 ];

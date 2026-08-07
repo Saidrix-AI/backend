@@ -34,10 +34,13 @@ afterAll(async () => {
 describe("buildToolset", () => {
   it("gates db tools on userId and web search on searchEnabled", () => {
     expect(buildToolset({ searchEnabled: false }).size).toBe(0);
-    expect(buildToolset({ userId: userA, searchEnabled: false }).size).toBe(21);
+    expect(buildToolset({ userId: userA, searchEnabled: false }).size).toBe(22);
     const withSearch = buildToolset({ userId: userA, searchEnabled: true });
-    expect(withSearch.size).toBe(22);
+    expect(withSearch.size).toBe(23);
     expect(withSearch.has("web_search")).toBe(true);
+    // Bulk delete: without it "clear my routine" had to be one call per item,
+    // which the destructive-call cap refuses.
+    expect(withSearch.has("delete_routine_items")).toBe(true);
     expect(withSearch.has("generate_course")).toBe(true);
     expect(withSearch.has("propose_courses")).toBe(true);
     expect(withSearch.has("organize_learning_path")).toBe(true);
