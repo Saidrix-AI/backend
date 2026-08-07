@@ -47,9 +47,8 @@ export function profileLines(brief: CourseBrief): string[] {
   const who = brief.learner ? [brief.learner, ""] : [];
   const p = brief.profile;
   if (!p) {
-    return brief.priorKnowledge
-      ? [...who, `Prior knowledge: ${brief.priorKnowledge}`]
-      : who;
+    const bare = brief.priorKnowledge ? [...who, `Prior knowledge: ${brief.priorKnowledge}`] : who;
+    return [...bare, ...intakeLines(brief)];
   }
   const lines = [...who, `Assessed level: ${p.level}`];
   if (p.goal) lines.push(`Their goal: ${p.goal}`);
@@ -57,10 +56,38 @@ export function profileLines(brief: CourseBrief): string[] {
   if (p.gapConcepts.length) lines.push(`Gaps to spend real depth on: ${p.gapConcepts.join(", ")}`);
   if (p.diagnosticScore != null) {
     lines.push(`Diagnostic quiz score: ${p.diagnosticScore}% — trust this over what they claimed.`);
+  } else {
+    // Saying nothing let the model read an absent score as a bad one. The
+    // intake director skips the diagnostic for students it cannot usefully
+    // test, so "not measured" is a normal outcome, not a failed exam.
+    lines.push("No diagnostic was asked — judge their level from the notes above, not from a missing score.");
   }
   if (p.weeklyHours) lines.push(`Study time available: about ${p.weeklyHours} hours a week`);
   if (p.styleNotes) lines.push(`Learning preferences: ${p.styleNotes}`);
   if (p.summary) lines.push(`Summary: ${p.summary}`);
+  return [...lines, ...intakeLines(brief)];
+}
+
+/** The guided intake's brief — what to DO about the profile above. */
+function intakeLines(brief: CourseBrief): string[] {
+  const lines: string[] = [];
+  if (brief.startFrom) {
+    lines.push(`START THE COURSE FROM: ${brief.startFrom} — chapter 1 must begin here, not earlier and not later.`);
+  }
+  if (brief.skip?.length) {
+    lines.push(`Do NOT re-teach (they have already proven it): ${brief.skip.join(", ")}`);
+  }
+  if (brief.needsSetupLesson) {
+    lines.push(
+      "This student has no working setup yet. The FIRST chapter must open with an installation lesson " +
+        "covering what to install and how to check it worked, before any concept is taught.",
+    );
+  }
+  if (brief.dailyMinutes) {
+    lines.push(
+      `They can study about ${brief.dailyMinutes} minutes at a time — keep individual lessons inside that.`,
+    );
+  }
   return lines;
 }
 

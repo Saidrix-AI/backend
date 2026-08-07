@@ -13,7 +13,12 @@ vi.mock("../src/agents/knowledge-profiler/index.js", async (importOriginal) => {
   return { ...actual, generateRound: vi.fn(), buildProfile: vi.fn() };
 });
 
-import { buildProfile, generateRound } from "../src/agents/knowledge-profiler/index.js";
+import {
+  buildProfile,
+  generateRound,
+  QUESTIONS_PER_ROUND,
+  TOTAL_ROUNDS,
+} from "../src/agents/knowledge-profiler/index.js";
 
 const mockRound = vi.mocked(generateRound);
 const mockProfile = vi.mocked(buildProfile);
@@ -24,10 +29,14 @@ let userId: string;
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
-/** Round 1 and 4 are self-report; 2 and 3 are diagnostics with a right answer. */
+/**
+ * The single round is all diagnostics now. The self-report questions that used
+ * to fill rounds 1 and 4 moved to the intake's own slots — asking them here as
+ * well was the duplication the redesign removed.
+ */
 function roundQuestions(round: number) {
-  const diagnostic = round === 2 || round === 3;
-  return Array.from({ length: 4 }, (_, i) => ({
+  const diagnostic = true;
+  return Array.from({ length: QUESTIONS_PER_ROUND }, (_, i) => ({
     header: `R${round}Q${i + 1}`,
     question: `Round ${round} question ${i + 1}?`,
     options: ["right", "wrong", "also wrong"],
@@ -38,15 +47,17 @@ function roundQuestions(round: number) {
 }
 
 /** Answers this round, picking the correct option for `correctCount` of them. */
-function answersFor(round: number, correctCount = 4) {
-  return Array.from({ length: 4 }, (_, i) => ({
-    answer: round === 2 || round === 3 ? (i < correctCount ? "right" : "wrong") : "some answer",
+function answersFor(_round: number, correctCount = QUESTIONS_PER_ROUND) {
+  return Array.from({ length: QUESTIONS_PER_ROUND }, (_, i) => ({
+    answer: i < correctCount ? "right" : "wrong",
   }));
 }
 
-// The check is no longer a chat tool of its own — it is the third stage of the
-// guided intake (see intake.test.ts), so these tests drive the service directly.
-async function startCheck(scope: "single" | "multi" = "single", language?: "en" | "bn" | "bn-latn") {
+// The check is no longer a chat tool of its own, nor the four-round exam it once
+// was: it is the guided intake's optional diagnostic probe (see intake.test.ts),
+// asked only when the director judges it worthwhile. These tests drive the
+// service directly.
+async function startCheck(scope: "single" | "multi" = "single", language?: string) {
   return startAssessment(userId, {
     topic: "Python",
     objective: "Learn Python for data analysis",
@@ -91,55 +102,71 @@ beforeEach(async () => {
 });
 
 describe("knowledge check rounds", () => {
-  it("runs four rounds of four questions and then returns the profile", async () => {
+  // Was four rounds of four. The sixteen-question exam is gone: rounds 1 and 4
+  // asked what the intake slots now own, and rounds 2-3 fired eight code
+  // diagnostics at everyone including absolute beginners.
+  it("runs one short round and then returns the profile", async () => {
     const first = await startCheck();
     expect(first.round).toBe(1);
-    expect(first.questions).toHaveLength(4);
-    expect(first.totalQuestions).toBe(16);
+    expect(first.questions).toHaveLength(QUESTIONS_PER_ROUND);
+    expect(first.totalRounds).toBe(TOTAL_ROUNDS);
+    expect(first.totalQuestions).toBe(QUESTIONS_PER_ROUND);
 
-    let payload: Record<string, unknown> = first as unknown as Record<string, unknown>;
-    for (let round = 1; round <= 4; round++) {
-      const res = await request(app)
-        .post(`/api/assessments/${first.assessmentId}/answers`)
-        .set(auth())
-        .send({ round, answers: answersFor(round) });
-      expect(res.status).toBe(200);
-      payload = res.body.data;
-      if (round < 4) {
-        expect(payload.round).toBe(round + 1);
-        expect(payload.answered).toBe(round * 4);
-        expect(payload.totalQuestions).toBe(16);
-      }
-    }
+    const res = await request(app)
+      .post(`/api/assessments/${first.assessmentId}/answers`)
+      .set(auth())
+      .send({ round: 1, answers: answersFor(1) });
+    expect(res.status).toBe(200);
 
+    const payload = res.body.data;
     expect(payload.done).toBe(true);
-    expect(payload.answered).toBe(16);
+    expect(payload.answered).toBe(QUESTIONS_PER_ROUND);
     expect(payload.nextAction).toBe("generate_course");
     expect(payload.summary).toContain("Starts at the basics");
 
     const doc = await KnowledgeAssessmentModel.findById(first.assessmentId).lean();
     expect(doc!.status).toBe("completed");
-    expect(doc!.asked).toHaveLength(16);
-    expect(doc!.answers).toHaveLength(16);
+    expect(doc!.asked).toHaveLength(QUESTIONS_PER_ROUND);
+    expect(doc!.answers).toHaveLength(QUESTIONS_PER_ROUND);
+  });
+
+  // The probe's questions come from the intake director, which writes them in
+  // the same call that decides whether to ask at all — generating a round here
+  // would cost a second round-trip and could not see the intake answers.
+  it("uses pre-written questions instead of generating a round", async () => {
+    const started = await startAssessment(userId, {
+      topic: "Python",
+      objective: "Learn Python",
+      questions: [
+        {
+          header: "Loops",
+          question: "What does range(3) yield?",
+          options: ["0 1 2", "1 2 3"],
+          multiSelect: false,
+          kind: "diagnostic",
+          correctIndex: 0,
+          concept: "range",
+        },
+      ],
+    });
+    expect(mockRound).not.toHaveBeenCalled();
+    expect(started.questions).toHaveLength(1);
+    expect(started.questions[0]!.question).toBe("What does range(3) yield?");
   });
 
   it("never exposes the correct answer or the concept tag to the client", async () => {
     const started = await startCheck();
     const id = started.assessmentId;
 
-    const next = await request(app)
-      .post(`/api/assessments/${id}/answers`)
-      .set(auth())
-      .send({ round: 1, answers: answersFor(1) });
-
-    // Round 2 is the diagnostic round — the stored questions have a correctIndex.
+    // The stored questions carry a correctIndex; the payload must not.
     const stored = await KnowledgeAssessmentModel.findById(id).lean();
     expect(stored!.asked.some((q) => q.correctIndex != null)).toBe(true);
 
-    const serialized = JSON.stringify(next.body);
+    const fetched = await request(app).get(`/api/assessments/${id}`).set(auth());
+    const serialized = JSON.stringify(fetched.body);
     expect(serialized).not.toContain("correctIndex");
     expect(serialized).not.toContain("concept");
-    expect(next.body.data.questions[0]).toEqual({
+    expect(fetched.body.data.questions[0]).toEqual({
       header: expect.any(String),
       question: expect.any(String),
       options: expect.any(Array),
@@ -151,21 +178,20 @@ describe("knowledge check rounds", () => {
     const started = await startCheck();
     const id = started.assessmentId;
 
-    await request(app).post(`/api/assessments/${id}/answers`).set(auth()).send({ round: 1, answers: answersFor(1) });
-    // Round 2: two of four correct.
+    // Two of three correct.
     await request(app)
       .post(`/api/assessments/${id}/answers`)
       .set(auth())
-      .send({ round: 2, answers: answersFor(2, 2) });
+      .send({ round: 1, answers: answersFor(1, 2) });
 
     const doc = await KnowledgeAssessmentModel.findById(id).lean();
-    const round2 = doc!.answers.filter((a) => a.round === 2);
-    expect(round2.map((a) => a.correct)).toEqual([true, true, false, false]);
-    // Self-report answers are never scored.
-    expect(doc!.answers.filter((a) => a.round === 1).every((a) => a.correct == null)).toBe(true);
-
-    // The next round is told the measured score, not a self-reported one.
-    expect(mockRound).toHaveBeenLastCalledWith(expect.objectContaining({ round: 3, diagnosticScore: 50 }));
+    expect(doc!.answers.map((a) => a.correct)).toEqual([true, true, false]);
+    // The profile is told the measured score, not a self-reported one.
+    expect(mockProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        history: expect.arrayContaining([expect.objectContaining({ correct: true })]),
+      }),
+    );
   });
 
   it("rejects answers for the wrong round", async () => {
@@ -175,7 +201,7 @@ describe("knowledge check rounds", () => {
     const res = await request(app)
       .post(`/api/assessments/${id}/answers`)
       .set(auth())
-      .send({ round: 3, answers: answersFor(3) });
+      .send({ round: 2, answers: answersFor(2) });
     expect(res.status).toBe(409);
 
     const doc = await KnowledgeAssessmentModel.findById(id).lean();
@@ -206,24 +232,30 @@ describe("knowledge check rounds", () => {
     expect(res.status).toBe(404);
   });
 
-  // The language is chosen on the intake's language card and must reach every
-  // round and the profile call — questions used to be written in whatever script
-  // the model inferred from the objective.
+  // The language is chosen on the intake's language card and must reach the
+  // round and the profile call — questions used to be written in whatever
+  // script the model inferred from the objective.
   it("writes the questions in the chosen language, not a guessed one", async () => {
-    const started = await startCheck("single", "bn-latn");
-    expect(mockRound).toHaveBeenLastCalledWith(expect.objectContaining({ language: "bn-latn" }));
+    const started = await startCheck("single", "bn");
+    expect(mockRound).toHaveBeenLastCalledWith(expect.objectContaining({ language: "bn" }));
 
-    for (let round = 1; round <= 4; round++) {
-      await request(app)
-        .post(`/api/assessments/${started.assessmentId}/answers`)
-        .set(auth())
-        .send({ round, answers: answersFor(round) });
-    }
-    expect(mockRound).toHaveBeenLastCalledWith(expect.objectContaining({ round: 4, language: "bn-latn" }));
-    expect(mockProfile).toHaveBeenCalledWith(expect.objectContaining({ language: "bn-latn" }));
+    await request(app)
+      .post(`/api/assessments/${started.assessmentId}/answers`)
+      .set(auth())
+      .send({ round: 1, answers: answersFor(1) });
+    expect(mockProfile).toHaveBeenCalledWith(expect.objectContaining({ language: "bn" }));
 
     const doc = await KnowledgeAssessmentModel.findById(started.assessmentId).lean();
-    expect(doc!.language).toBe("bn-latn");
+    expect(doc!.language).toBe("bn");
+  });
+
+  // The language set is open — a student can type one the app has no entry for
+  // and it must survive all the way through rather than being coerced.
+  it("carries a language that is not on the card", async () => {
+    const started = await startCheck("single", "ja");
+    expect(mockRound).toHaveBeenLastCalledWith(expect.objectContaining({ language: "ja" }));
+    const doc = await KnowledgeAssessmentModel.findById(started.assessmentId).lean();
+    expect(doc!.language).toBe("ja");
   });
 
   it("defaults to English when no language was chosen", async () => {
@@ -238,16 +270,11 @@ describe("knowledge check rounds", () => {
       scope: "multi",
     });
 
-    const id = started.assessmentId;
-    let body: Record<string, unknown> = {};
-    for (let round = 1; round <= 4; round++) {
-      const res = await request(app)
-        .post(`/api/assessments/${id}/answers`)
-        .set(auth())
-        .send({ round, answers: answersFor(round) });
-      body = res.body.data;
-    }
-    expect(body.nextAction).toBe("propose_courses");
+    const res = await request(app)
+      .post(`/api/assessments/${started.assessmentId}/answers`)
+      .set(auth())
+      .send({ round: 1, answers: answersFor(1) });
+    expect(res.body.data.nextAction).toBe("propose_courses");
   });
 });
 

@@ -1,5 +1,5 @@
 import { isResourcesEnabled } from "../../config/env.js";
-import { DEFAULT_LANGUAGE, type Language } from "../../validation/language.js";
+import { DEFAULT_LANGUAGE, localized, type Language } from "../../validation/language.js";
 import { runWebSearch } from "../tools/web-search.js";
 import { formatZodIssues, resolveLectureDeps, runForcedToolCall, type LlmDeps } from "./call.js";
 import {
@@ -50,17 +50,22 @@ export { PAID_COURSE_DOMAINS, isBlockedUrl };
  * a section whose heading failed to generate is a hole in the page, and there
  * is nothing here worth an LLM's judgement.
  */
-export const RESOURCES_TITLE: Record<Language, string> = {
+// Keyed by language code with an English fallback (see localized): the content
+// language set is open, so these can only be pre-translated for the languages
+// the card offers.
+export const RESOURCES_TITLE: Record<string, string> = {
   en: "Resources",
   bn: "আরও জানতে",
-  "bn-latn": "Aro Jante Chao",
+  hi: "और जानने के लिए",
+  es: "Recursos",
 };
 
 /** Spoken/standfirst line used when the model's `intro` is unusable. */
-const FALLBACK_INTRO: Record<Language, string> = {
+const FALLBACK_INTRO: Record<string, string> = {
   en: "Here are a few free places to take this further when you are ready.",
   bn: "এই বিষয়ে আরও এগোতে চাইলে নিচের ফ্রি জায়গাগুলো দেখতে পারো।",
-  "bn-latn": "Ei bishoye aro egote chaile niche er free jaygagulo dekhte paro.",
+  hi: "जब आप तैयार हों, तो इस विषय में आगे बढ़ने के लिए ये मुफ़्त जगहें देखें।",
+  es: "Aquí tienes algunos recursos gratuitos para profundizar cuando quieras.",
 };
 
 const READING_CANDIDATES = 10;
@@ -280,7 +285,7 @@ export async function buildResourcesBlock(input: ResourcesInput): Promise<Resour
 
     const candidate = {
       type: "resources" as const,
-      intro: picked.intro || FALLBACK_INTRO[lang],
+      intro: picked.intro || localized(FALLBACK_INTRO, lang),
       links: links.slice(0, 6),
     };
 
@@ -296,7 +301,7 @@ export async function buildResourcesBlock(input: ResourcesInput): Promise<Resour
       `[lecture-maker] resources: ${links.length} link(s) for "${ctx.topicTitle}"` +
         `${picked.videoPick ? " (incl. video)" : ""}`,
     );
-    return { block: parsed.data, topicTitle: RESOURCES_TITLE[lang] };
+    return { block: parsed.data, topicTitle: localized(RESOURCES_TITLE, lang) };
   } catch (err) {
     console.warn(
       `[lecture-maker] resources skipped for "${ctx.topicTitle}":`,

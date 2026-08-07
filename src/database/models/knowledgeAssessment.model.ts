@@ -1,5 +1,5 @@
 import { Schema, model, Types, type InferSchemaType } from "mongoose";
-import { DEFAULT_LANGUAGE, LANGUAGES } from "../../validation/language.js";
+import { DEFAULT_LANGUAGE } from "../../validation/language.js";
 
 /**
  * One question that was put to the student. `correctIndex` and `concept` are
@@ -54,8 +54,11 @@ const knowledgeAssessmentSchema = new Schema(
     objective: { type: String, required: true, trim: true },
     /** Which course tool should run once the check completes. */
     scope: { type: String, enum: ["single", "multi"], default: "single" },
-    /** Language the questions are written in — chosen in the intake, never guessed. */
-    language: { type: String, enum: [...LANGUAGES], default: DEFAULT_LANGUAGE },
+    /**
+     * Language the questions are written in — chosen in the intake, never
+     * guessed. Open set, not an enum (validation/language.ts).
+     */
+    language: { type: String, default: DEFAULT_LANGUAGE },
     status: { type: String, enum: ["in_progress", "completed"], default: "in_progress" },
     /** The round currently awaiting answers (1-based). */
     round: { type: Number, default: 1 },

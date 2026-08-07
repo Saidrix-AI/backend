@@ -1,5 +1,5 @@
 import { Schema, model, Types, type InferSchemaType } from "mongoose";
-import { DEFAULT_LANGUAGE, LANGUAGES } from "../../validation/language.js";
+import { DEFAULT_LANGUAGE } from "../../validation/language.js";
 
 // The `summary` / `outcomes` / duration fields are written by the Course-maker's
 // enrichment pass (agents/course-maker/enrich.ts). They are optional on purpose:
@@ -65,8 +65,10 @@ const courseSchema = new Schema(
       default: "Beginner",
     },
     // The language its curriculum text is written in, chosen in the guided
-    // intake — lectures for this course are then generated in it too.
-    language: { type: String, enum: [...LANGUAGES], default: DEFAULT_LANGUAGE },
+    // intake — lectures for this course are then generated in it too. Not an
+    // enum: the language set is open (validation/language.ts), so a student can
+    // type a language we have no entry for and still get a course in it.
+    language: { type: String, default: DEFAULT_LANGUAGE },
     // Derived from chapters (total topic count) on create/update.
     lessons: { type: Number, default: 0 },
     estimatedHours: { type: Number, default: 0 },

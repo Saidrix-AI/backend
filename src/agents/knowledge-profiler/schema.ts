@@ -2,9 +2,22 @@ import type OpenAI from "openai";
 import { z } from "zod";
 import { LEVELS } from "../../validation/course.schema.js";
 
-/** Four rounds of four questions — the ~16-question knowledge check. */
-export const TOTAL_ROUNDS = 4;
-export const QUESTIONS_PER_ROUND = 4;
+/**
+ * ONE round of three questions.
+ *
+ * This was four rounds of four — a sixteen-question exam every student sat
+ * through before any course existed, and the single biggest source of the
+ * irrelevant questions the intake redesign removed. Rounds 1 and 4 asked about
+ * goals, time and preferences, which the intake slots now own; rounds 2 and 3
+ * fired eight code diagnostics at everyone, including people who had just said
+ * they had never written a line.
+ *
+ * What survives is the part that only a question can establish: a short,
+ * calibrated probe, asked only when the intake director judges it would change
+ * where the course starts (agents/intake/director.ts).
+ */
+export const TOTAL_ROUNDS = 1;
+export const QUESTIONS_PER_ROUND = 3;
 
 export const QUESTION_KINDS = ["self_report", "diagnostic"] as const;
 export type QuestionKind = (typeof QUESTION_KINDS)[number];

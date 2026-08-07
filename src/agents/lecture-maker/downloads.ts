@@ -1,5 +1,5 @@
 import { isResourcesEnabled } from "../../config/env.js";
-import { DEFAULT_LANGUAGE, type Language } from "../../validation/language.js";
+import { DEFAULT_LANGUAGE, localized, type Language } from "../../validation/language.js";
 import { runWebSearch } from "../tools/web-search.js";
 import { formatZodIssues, resolveLectureDeps, runForcedToolCall, type LlmDeps } from "./call.js";
 import {
@@ -58,10 +58,13 @@ const PER_TOOL_CANDIDATES = 5;
 const MAX_CANDIDATES = 10;
 
 /** Spoken/standfirst line used when the model's `intro` is unusable. */
-const FALLBACK_INTRO: Record<Language, string> = {
+// Keyed by language code with an English fallback (see localized): the content
+// language set is open, so only the card's languages are pre-translated.
+const FALLBACK_INTRO: Record<string, string> = {
   en: "Here is where to download everything you need. Grab the file for your computer before moving on.",
   bn: "যা যা লাগবে সব এখান থেকে ডাউনলোড করো। এগোনোর আগে তোমার কম্পিউটারের জন্য ঠিক ফাইলটা নামিয়ে নাও।",
-  "bn-latn": "Ja ja lagbe sob ekhan theke download koro. Egonor age tomar computer er jonno thik file ta namiye nao.",
+  hi: "यहाँ से आपको जो चाहिए सब डाउनलोड करें। आगे बढ़ने से पहले अपने कंप्यूटर के लिए सही फ़ाइल ले लें।",
+  es: "Aquí puedes descargar todo lo necesario. Elige el archivo para tu ordenador antes de continuar.",
 };
 
 /** The word a search engine wants for each OS. */
@@ -269,7 +272,7 @@ export async function buildDownloadsBlock(input: DownloadsInput): Promise<Downlo
 
     const candidate = {
       type: "downloads" as const,
-      intro: picked.intro || FALLBACK_INTRO[lang],
+      intro: picked.intro || localized(FALLBACK_INTRO, lang),
       os: (ctx.os ?? "any") as DownloadsBlock["os"],
       links,
     };

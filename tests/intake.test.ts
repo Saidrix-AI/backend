@@ -7,26 +7,33 @@ import { buildToolset } from "../src/agents/tools/registry.js";
 import { LearningIntakeModel } from "../src/database/models/learningIntake.model.js";
 import { KnowledgeAssessmentModel } from "../src/database/models/knowledgeAssessment.model.js";
 
-// Both LLM boundaries are mocked: the intake's own goal-question writer and the
-// knowledge profiler behind the test stage. Everything else — the stage
-// machine, the stage guards, what reaches the chat agent — is real.
+// The three LLM boundaries are mocked: the intake plan (classification + the
+// two topic questions), the probe director, and the closing report. Everything
+// else — the slot machine, the skip rules, the scoring, what reaches the chat
+// agent — is real.
 vi.mock("../src/agents/intake/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/agents/intake/index.js")>();
-  return { ...actual, generateGoalQuestions: vi.fn() };
+  return { ...actual, generateIntakePlan: vi.fn() };
 });
-vi.mock("../src/agents/knowledge-profiler/index.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/agents/knowledge-profiler/index.js")>();
-  return { ...actual, generateRound: vi.fn(), buildProfile: vi.fn() };
+vi.mock("../src/agents/intake/director.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/agents/intake/director.js")>();
+  return { ...actual, decideProbe: vi.fn() };
+});
+vi.mock("../src/agents/intake/report.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/agents/intake/report.js")>();
+  return { ...actual, buildIntakeReport: vi.fn() };
 });
 
-import { generateGoalQuestions } from "../src/agents/intake/index.js";
-import { buildProfile, generateRound } from "../src/agents/knowledge-profiler/index.js";
+import { generateIntakePlan } from "../src/agents/intake/index.js";
+import { decideProbe } from "../src/agents/intake/director.js";
+import { buildIntakeReport } from "../src/agents/intake/report.js";
 import { findReusableIntake, isSameTopic, latestIntake } from "../src/services/intake.service.js";
+import { latestProfile } from "../src/services/assessment.service.js";
 import { getLearnerProfile } from "../src/services/learnerProfile.service.js";
 
-const mockGoal = vi.mocked(generateGoalQuestions);
-const mockRound = vi.mocked(generateRound);
-const mockProfile = vi.mocked(buildProfile);
+const mockPlan = vi.mocked(generateIntakePlan);
+const mockProbe = vi.mocked(decideProbe);
+const mockReport = vi.mocked(buildIntakeReport);
 
 let mongo: MongoMemoryServer;
 let token: string;
@@ -34,44 +41,37 @@ let userId: string;
 
 const auth = () => ({ Authorization: `Bearer ${token}` });
 
-function roundQuestions(round: number) {
-  const diagnostic = round === 2 || round === 3;
-  return Array.from({ length: 4 }, (_, i) => ({
-    header: `R${round}Q${i + 1}`,
-    question: `Round ${round} question ${i + 1}?`,
-    options: ["right", "wrong"],
-    multiSelect: false,
-    kind: (diagnostic ? "diagnostic" : "self_report") as "diagnostic" | "self_report",
-    ...(diagnostic ? { correctIndex: 0, concept: `c-${round}-${i}` } : {}),
-  }));
-}
-
-const answers = (n: number, text = "right") => Array.from({ length: n }, () => ({ answer: text }));
-
-async function startIntakeViaTool(scope: "single" | "multi" = "single") {
-  const tools = buildToolset({ userId, searchEnabled: false });
-  return tools.get("start_learning_intake")!.run(
-    { userId },
-    { topic: "Python", objective: "ami python shikhte chai", scope },
-  );
-}
-
 function post(id: string, body: Record<string, unknown>) {
   return request(app).post(`/api/intake/${id}/answers`).set(auth()).send(body);
 }
 
-/** Walks a fresh intake all the way to the finished summary. */
-async function completeIntake(scope: "single" | "multi" = "single", language = "বাংলা (Bangla)") {
-  const started = await startIntakeViaTool(scope);
-  const id = started.intake!.intakeId;
-  await post(id, { stage: "goal", answers: answers(2, "Build my own project") });
-  await post(id, { stage: "language", answers: [{ answer: language }] });
-  await post(id, { stage: "device", answers: [{ answer: "Windows" }] });
-  for (let round = 1; round <= 4; round++) {
-    await post(id, { stage: "test", round, answers: answers(4) });
+const answer = (text: string) => [{ answer: text }];
+
+async function startIntakeViaTool(scope: "single" | "multi" = "single", topic = "Python") {
+  const tools = buildToolset({ userId, searchEnabled: false });
+  return tools.get("start_learning_intake")!.run(
+    { userId },
+    { topic, objective: `ami ${topic} shikhte chai`, scope },
+  );
+}
+
+/** Answers whatever stage the intake is on, until it reports done. */
+async function walk(id: string, replies: Partial<Record<string, string[]>>) {
+  let payload = (await request(app).get(`/api/intake/${id}`).set(auth())).body.data;
+  const seen: string[] = [];
+  for (let step = 0; step < 20 && !payload.done; step++) {
+    const stage = payload.stage as string;
+    seen.push(stage);
+    const given = replies[stage] ?? payload.questions.map(() => "ok");
+    const res = await post(id, {
+      stage,
+      ...(payload.round ? { round: payload.round } : {}),
+      answers: given.map((a: string) => ({ answer: a })),
+    });
+    expect(res.status).toBe(200);
+    payload = res.body.data;
   }
-  const last = await post(id, { stage: "timetable", answers: answers(3, "Every day") });
-  return { id, done: last.body.data as Record<string, unknown> };
+  return { seen, done: payload as Record<string, unknown> };
 }
 
 beforeAll(async () => {
@@ -93,122 +93,167 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  mockGoal.mockReset();
-  mockRound.mockReset();
-  mockProfile.mockReset();
-  mockGoal.mockResolvedValue([
-    { header: "Goal", question: "Ki korte chao?", options: ["Job", "Project"] },
-    { header: "Target", question: "Koto dur?", options: ["Basics", "Mastery"] },
-  ]);
-  mockRound.mockImplementation(async (ctx) => roundQuestions(ctx.round));
-  mockProfile.mockResolvedValue({
+  mockPlan.mockReset();
+  mockProbe.mockReset();
+  mockReport.mockReset();
+
+  mockPlan.mockResolvedValue({
+    topicKind: "programming",
+    needsLocalSetup: true,
+    goalQuestion: { header: "Goal", question: "Ki korte chao?", options: ["Job", "Project"] },
+    backgroundQuestion: {
+      header: "Background",
+      question: "Age ki korecho?",
+      options: ["Kichu na", "Ektu"],
+    },
+  });
+  mockProbe.mockResolvedValue({ ask: false, reason: "absolute beginner" });
+  mockReport.mockResolvedValue({
     level: "Beginner",
-    knownConcepts: ["variables"],
-    gapConcepts: ["pandas"],
+    startFrom: "what a variable is",
+    skip: [],
+    knownConcepts: [],
+    gapConcepts: ["variables", "loops"],
     goal: "Build projects",
     weeklyHours: 5,
     styleNotes: "Prefers projects",
     summary: "Starts at the basics.",
-    diagnosticScore: 100,
+    diagnosticScore: null,
   });
+
   await LearningIntakeModel.deleteMany({});
   await KnowledgeAssessmentModel.deleteMany({});
 });
 
 describe("start_learning_intake tool", () => {
-  it("opens on the goal stage and tells the model to stop", async () => {
+  it("opens on the language card with no model call in front of it", async () => {
     const started = await startIntakeViaTool();
     expect(started.ok).toBe(true);
     const intake = started.intake!;
-    expect(intake.stage).toBe("goal");
+    expect(intake.stage).toBe("language");
     expect(intake.stageIndex).toBe(1);
-    expect(intake.totalStages).toBe(5);
-    expect(intake.questions).toHaveLength(2);
-    expect(intake.questions[0]!.header).toBe("Goal");
+    expect(intake.questions).toHaveLength(1);
+    // The plan call is deferred until the language is known, so the first card
+    // costs nothing and the topic questions get written in the right language.
+    expect(mockPlan).not.toHaveBeenCalled();
     expect(started.modelText).toContain("do NOT create any course yet");
   });
 
-  it("falls back to fixed questions when the writer fails", async () => {
-    mockGoal.mockRejectedValueOnce(new Error("model down"));
+  it("offers four distinct languages and no Banglish", async () => {
     const started = await startIntakeViaTool();
-    // generateGoalQuestions is the only LLM call in this stage and it swallows
-    // its own failures — but a rejected mock must still not dead-end the intake.
-    expect(started.ok).toBe(false);
-    expect(started.label).toContain("Couldn't start");
+    const options = started.intake!.questions[0]!.options;
+    expect(options).toHaveLength(4);
+    expect(options.join(" ")).not.toMatch(/banglish/i);
+    expect(options.filter((o) => /bangla|বাংলা/i.test(o))).toHaveLength(1);
   });
 });
 
-describe("intake stages", () => {
-  it("walks goal → language → device → test → timetable and returns one summary", async () => {
+describe("the slot machine", () => {
+  it("walks a coding beginner in 8 questions and never tests them", async () => {
     const started = await startIntakeViaTool();
     const id = started.intake!.intakeId;
 
-    const language = await post(id, { stage: "goal", answers: answers(2, "Build my own project") });
-    expect(language.status).toBe(200);
-    expect(language.body.data.stage).toBe("language");
-    expect(language.body.data.stageIndex).toBe(2);
-    expect(language.body.data.questions[0].options).toHaveLength(3);
+    const { seen, done } = await walk(id, {
+      language: ["বাংলা (Bangla)"],
+      goal: ["Project"],
+      os: ["Windows"],
+      tools: ["I don't know what that is"],
+      background: ["Kichu na"],
+      schedule: ["Within 1 month", "About 1 hour"],
+      routine: ["Yes — evenings (06:00 PM)"],
+    });
 
-    const device = await post(id, { stage: "language", answers: [{ answer: "Banglish (Bangla in English letters)" }] });
-    expect(device.body.data.stage).toBe("device");
-    expect(device.body.data.stageIndex).toBe(3);
-    expect(device.body.data.questions[0].options).toEqual(["Windows", "macOS", "Linux"]);
-
-    const test = await post(id, { stage: "device", answers: [{ answer: "my macbook" }] });
-    expect(test.body.data.stage).toBe("test");
-    expect(test.body.data.stageIndex).toBe(4);
-    expect(test.body.data.round).toBe(1);
-    expect(test.body.data.totalQuestions).toBe(16);
-    // The chosen language drives the questions rather than the objective's script.
-    expect(mockRound).toHaveBeenLastCalledWith(expect.objectContaining({ language: "bn-latn" }));
-
-    let payload: Record<string, unknown> = {};
-    for (let round = 1; round <= 4; round++) {
-      payload = (await post(id, { stage: "test", round, answers: answers(4) })).body.data;
-    }
-    expect(payload.stage).toBe("timetable");
-    expect(payload.stageIndex).toBe(5);
-    expect((payload.questions as { header: string }[]).map((q) => q.header)).toEqual([
-      "Finish by",
-      "Study days",
-      "Study time",
-    ]);
-
-    const done = await post(id, { stage: "timetable", answers: answers(3, "Every day") });
-    expect(done.body.data.done).toBe(true);
-    expect(done.body.data.nextAction).toBe("propose_courses");
-    const summary = done.body.data.summary as string;
-    expect(summary).toContain("Goal: Build my own project");
-    expect(summary).toContain("Banglish");
-    expect(summary).toContain("Starts at the basics");
-    expect(summary).toContain("Study time: Every day");
+    // foundation is skipped: they just said they do not know what an editor is,
+    // which answers the programming-basics question. probe is skipped by the
+    // director. That is 8 questions where the old intake asked 23.
+    expect(seen).toEqual(["language", "goal", "os", "tools", "background", "schedule", "routine"]);
+    expect(done.done).toBe(true);
 
     const doc = await LearningIntakeModel.findById(id).lean();
     expect(doc!.status).toBe("completed");
-    expect(doc!.language).toBe("bn-latn");
-    expect(doc!.timetable).toHaveLength(3);
-    // Free text, not one of the three options — and it still lands on the
-    // profile, where the lecture-maker's setup lane reads it.
-    expect(doc!.operatingSystem).toBe("macos");
-    const learner = await getLearnerProfile(userId);
-    expect(learner!.operatingSystem).toBe("macos");
+    expect(doc!.skipped).toContain("foundation");
+    expect(doc!.skipped).toContain("probe");
+    expect(doc!.answers).toHaveLength(8);
+  });
+
+  it("skips the computer, editor and programming slots for a non-technical subject", async () => {
+    mockPlan.mockResolvedValue({
+      topicKind: "non-technical",
+      needsLocalSetup: false,
+      goalQuestion: { header: "Goal", question: "Why IELTS?", options: ["Study abroad", "Work"] },
+      backgroundQuestion: { header: "Background", question: "Taken it before?", options: ["No", "Yes"] },
+    });
+    const started = await startIntakeViaTool("single", "IELTS preparation");
+    const { seen } = await walk(started.intake!.intakeId, {
+      schedule: ["Within 1 month", "About 1 hour"],
+      routine: ["No — I'll set it up myself later"],
+    });
+
+    expect(seen).toEqual(["language", "goal", "background", "schedule", "routine"]);
+    expect(seen).not.toContain("os");
+    expect(seen).not.toContain("tools");
+    expect(seen).not.toContain("foundation");
+  });
+
+  it("asks the programming question when the student knows what an editor is", async () => {
+    const started = await startIntakeViaTool();
+    const { seen } = await walk(started.intake!.intakeId, {
+      tools: ["Yes — VS Code"],
+      schedule: ["Within 1 month", "About 1 hour"],
+      routine: ["No — I'll set it up myself later"],
+    });
+    expect(seen).toContain("foundation");
+  });
+
+  it("runs the diagnostic when the director asks for one", async () => {
+    mockProbe.mockResolvedValue({
+      ask: true,
+      reason: "claims real experience",
+      questions: [
+        {
+          header: "Loops",
+          question: "What does range(3) yield?",
+          options: ["0 1 2", "1 2 3"],
+          multiSelect: false,
+          kind: "diagnostic",
+          correctIndex: 0,
+          concept: "range",
+        },
+      ],
+    });
+
+    const started = await startIntakeViaTool();
+    const id = started.intake!.intakeId;
+    const { seen } = await walk(id, {
+      tools: ["Yes — VS Code"],
+      background: ["Ektu"],
+      probe: ["0 1 2"],
+      schedule: ["Within 1 month", "About 1 hour"],
+      routine: ["Yes — mornings (08:00 AM)"],
+    });
+
+    expect(seen).toContain("probe");
+    // The answer key never left the server, so the score is computed here.
+    expect(mockReport).toHaveBeenCalledWith(
+      expect.objectContaining({ diagnostic: expect.objectContaining({ correct: 1, total: 1 }) }),
+    );
   });
 
   it("rejects answers for a stage the intake is not on", async () => {
     const started = await startIntakeViaTool();
-    const res = await post(started.intake!.intakeId, { stage: "timetable", answers: answers(3) });
+    const res = await post(started.intake!.intakeId, { stage: "routine", answers: answer("x") });
     expect(res.status).toBe(409);
   });
 
   it("resumes mid-intake instead of restarting", async () => {
     const started = await startIntakeViaTool();
     const id = started.intake!.intakeId;
-    await post(id, { stage: "goal", answers: answers(2) });
+    await post(id, { stage: "language", answers: answer("English") });
 
     const resumed = await request(app).get(`/api/intake/${id}`).set(auth());
     expect(resumed.status).toBe(200);
-    expect(resumed.body.data.stage).toBe("language");
-    expect(resumed.body.data.questions).toHaveLength(1);
+    expect(resumed.body.data.stage).toBe("goal");
+    expect(resumed.body.data.questions[0].question).toBe("Ki korte chao?");
   });
 
   it("does not leak another user's intake", async () => {
@@ -224,22 +269,105 @@ describe("intake stages", () => {
       .set({ Authorization: `Bearer ${other.body.data.accessToken}` });
     expect(res.status).toBe(404);
   });
+});
 
-  it("falls back to English for an unrecognised typed language", async () => {
+describe("language", () => {
+  it("stamps the chosen language and writes the topic questions in it", async () => {
     const started = await startIntakeViaTool();
     const id = started.intake!.intakeId;
-    await post(id, { stage: "goal", answers: answers(2) });
-    await post(id, { stage: "language", answers: [{ answer: "Klingon" }] });
+    await post(id, { stage: "language", answers: answer("বাংলা (Bangla)") });
+
+    expect(mockPlan).toHaveBeenCalledWith(expect.objectContaining({ language: "bn" }));
+    const doc = await LearningIntakeModel.findById(id).lean();
+    expect(doc!.language).toBe("bn");
+  });
+
+  // The regression the open language set exists for.
+  it("honours a typed language that is not on the card", async () => {
+    const started = await startIntakeViaTool();
+    const id = started.intake!.intakeId;
+    await post(id, { stage: "language", answers: answer("Japanese") });
 
     const doc = await LearningIntakeModel.findById(id).lean();
-    expect(doc!.language).toBe("en");
+    expect(doc!.language).toBe("ja");
+    expect(mockPlan).toHaveBeenCalledWith(expect.objectContaining({ language: "ja" }));
+  });
+});
+
+describe("the finished intake", () => {
+  it("hands the chat agent a brief rather than a dump of answers", async () => {
+    const started = await startIntakeViaTool();
+    const { done } = await walk(started.intake!.intakeId, {
+      language: ["বাংলা (Bangla)"],
+      os: ["my macbook"],
+      tools: ["No, nothing installed yet"],
+      schedule: ["Within 1 month", "About 2 hours"],
+      routine: ["Yes — evenings (06:00 PM)"],
+    });
+
+    const summary = done.summary as string;
+    expect(done.nextAction).toBe("propose_courses");
+    expect(summary).toContain("Level: Beginner");
+    expect(summary).toContain("Start from: what a variable is");
+    expect(summary).toContain("no diagnostic was asked");
+    expect(summary).toContain("include a setup lesson");
+    expect(summary).toContain("120 minutes a day");
+    expect(summary).toContain("Auto-routine: YES");
+    expect(summary).toContain("06:00 PM");
+  });
+
+  it("tells the agent NOT to build a routine when the student declined", async () => {
+    const started = await startIntakeViaTool();
+    const { done } = await walk(started.intake!.intakeId, {
+      schedule: ["Within 1 month", "About 1 hour"],
+      routine: ["No — I'll set it up myself later"],
+    });
+    expect(done.summary as string).toContain("Auto-routine: NO");
+    expect(done.summary as string).toContain("do not build one");
+  });
+
+  it("saves the operating system onto the learner profile for the setup lane", async () => {
+    const started = await startIntakeViaTool();
+    await walk(started.intake!.intakeId, {
+      os: ["my macbook"],
+      schedule: ["Within 1 month", "About 1 hour"],
+      routine: ["No — I'll set it up myself later"],
+    });
+    const learner = await getLearnerProfile(userId);
+    expect(learner!.operatingSystem).toBe("macos");
+  });
+
+  // The regression that would otherwise be invisible: with no diagnostic there
+  // is no KnowledgeAssessment, so latestProfile() finds nothing and the
+  // course-maker silently loses the whole learner picture.
+  it("always leaves a completed knowledge profile, even with no diagnostic", async () => {
+    const started = await startIntakeViaTool();
+    await walk(started.intake!.intakeId, {
+      schedule: ["Within 1 month", "About 1 hour"],
+      routine: ["No — I'll set it up myself later"],
+    });
+
+    const found = await latestProfile(userId);
+    expect(found).not.toBeNull();
+    expect(found!.profile.level).toBe("Beginner");
+    expect(found!.profile.diagnosticScore).toBeNull();
+    expect(found!.profile.gapConcepts).toContain("variables");
   });
 });
 
 // A blanket "this student did an intake recently → skip it" rule sent brand-new
-// topics straight to course creation with no questions at all. Reuse is now
-// scoped to the topic, and deliberately errs towards asking again.
+// topics straight to course creation with no questions at all. Reuse is scoped
+// to the topic, and deliberately errs towards asking again.
 describe("topic-scoped intake reuse", () => {
+  async function completeIntake(topic = "Python") {
+    const started = await startIntakeViaTool("single", topic);
+    await walk(started.intake!.intakeId, {
+      language: ["বাংলা (Bangla)"],
+      schedule: ["Within 1 month", "About 1 hour"],
+      routine: ["No — I'll set it up myself later"],
+    });
+  }
+
   it("treats a longer phrasing of the same topic as the same topic", () => {
     expect(isSameTopic("SQL", "SQL for data analysis")).toBe(true);
     expect(isSameTopic("sql for data analysis", "SQL For Data Analysis!")).toBe(true);
@@ -253,11 +381,9 @@ describe("topic-scoped intake reuse", () => {
 
   it("reuses a finished intake for the same topic but not for a new one", async () => {
     await completeIntake();
-
     const same = await findReusableIntake(userId, "Python for data work");
     expect(same?.topic).toBe("Python");
     expect(same?.language).toBe("bn");
-
     expect(await findReusableIntake(userId, "Docker")).toBeNull();
   });
 
@@ -271,8 +397,7 @@ describe("topic-scoped intake reuse", () => {
     expect(await findReusableIntake(userId, "Python")).toBeNull();
   });
 
-  // The tool — not the router — makes the call, so the topic is available.
-  it("start_learning_intake shows cards for a new topic and skips them for a repeat", async () => {
+  it("shows cards for a new topic and skips them for a repeat", async () => {
     await completeIntake();
     const tools = buildToolset({ userId, searchEnabled: false });
     const start = (topic: string) =>
@@ -285,20 +410,32 @@ describe("topic-scoped intake reuse", () => {
     expect(repeat.modelText).toContain("বাংলা");
 
     const fresh = await start("Docker");
-    expect(fresh.intake?.stage).toBe("goal");
-    expect(fresh.intake?.questions).toHaveLength(2);
+    expect(fresh.intake?.stage).toBe("language");
   });
 });
 
 describe("latestIntake", () => {
-  it("hands the chosen language and timetable to the course generator", async () => {
+  it("hands the course generator the language, the brief and the schedule", async () => {
     expect(await latestIntake(userId)).toBeNull();
-    await completeIntake();
+
+    const started = await startIntakeViaTool();
+    await walk(started.intake!.intakeId, {
+      language: ["বাংলা (Bangla)"],
+      tools: ["No, nothing installed yet"],
+      schedule: ["Within 2 weeks", "About 2 hours"],
+      routine: ["Yes — mornings (08:00 AM)"],
+    });
 
     const found = await latestIntake(userId);
     expect(found!.language).toBe("bn");
-    expect(found!.timetable).toContain("Study time: Every day");
-    expect(found!.goal).toContain("Goal:");
+    expect(found!.dailyMinutes).toBe(120);
+    expect(found!.finishByDays).toBe(14);
+    expect(found!.autoRoutine).toBe(true);
+    expect(found!.routineTime).toBe("08:00 AM");
+    expect(found!.report!.startFrom).toBe("what a variable is");
+    // Derived from the editor answer, never from the model.
+    expect(found!.report!.needsSetupLesson).toBe(true);
+    expect(found!.timetable).toContain("Daily time");
   });
 
   it("ignores an intake that is still in progress", async () => {

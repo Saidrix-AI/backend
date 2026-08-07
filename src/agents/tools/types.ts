@@ -40,10 +40,13 @@ export interface AssessmentStart {
 }
 
 /**
- * The opening stage of a guided intake (goal → language → knowledge check →
- * timetable). Like the knowledge check, the client keeps stepping through the
- * same card UI — posting each stage to /api/intake — and the chat turn ends here.
- * Shape mirrors services/intake.service.ts IntakeStagePayload.
+ * The opening stage of a guided intake. Like the knowledge check, the client
+ * keeps stepping through the same card UI — posting each stage to /api/intake —
+ * and the chat turn ends here. Shape mirrors services/intake.service.ts
+ * IntakeStagePayload.
+ *
+ * `stages` and the totals are per-student: the server skips the stages that do
+ * not apply, so the client must render what it is sent rather than a fixed list.
  */
 export interface IntakeStart {
   intakeId: string;
@@ -51,11 +54,12 @@ export interface IntakeStart {
   stageIndex: number;
   totalStages: number;
   stageLabel: string;
+  stages: string[];
   questions: AskQuestion[];
+  answered: number;
+  totalQuestions: number;
   round?: number;
   totalRounds?: number;
-  answered?: number;
-  totalQuestions?: number;
 }
 
 export interface ToolOutcome {

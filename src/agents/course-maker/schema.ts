@@ -29,6 +29,17 @@ export interface CourseBrief {
   /** The measured picture from a completed knowledge check, when there is one. */
   profile?: KnowledgeProfile;
   /**
+   * The guided intake's brief, on top of `profile`. `profile` says what they
+   * know; these say what to DO about it — where chapter 1 begins for this
+   * student, what must not be re-taught, whether the course owes them an
+   * installation lesson, and how long a sitting they can actually manage.
+   * Absent for courses generated outside an intake.
+   */
+  startFrom?: string;
+  skip?: string[];
+  needsSetupLesson?: boolean;
+  dailyMinutes?: number;
+  /**
    * Who the student is — age band, occupation, education, work, interests
    * (services/learnerProfile.service.ts). Orthogonal to `profile`: that measures
    * what they know about THIS topic, this says who is being taught. Empty when

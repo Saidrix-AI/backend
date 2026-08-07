@@ -3,6 +3,7 @@ import {
   buildProfile,
   generateRound,
   QUESTIONS_PER_ROUND,
+  scoreDiagnostics,
   TOTAL_ROUNDS,
   type AnsweredQuestion,
   type GeneratedQuestion,
@@ -110,17 +111,32 @@ function appendRound(doc: Doc, round: number, questions: GeneratedQuestion[]): v
 
 export async function startAssessment(
   userId: string,
-  input: { topic: string; objective: string; scope?: "single" | "multi"; language?: Language },
+  input: {
+    topic: string;
+    objective: string;
+    scope?: "single" | "multi";
+    language?: Language;
+    /**
+     * Pre-written questions. The guided intake's director already writes the
+     * probe in the same call that decides whether to ask it (see
+     * agents/intake/director.ts), so generating a round here would be a second
+     * round-trip producing a worse question — it cannot see the intake answers.
+     */
+    questions?: GeneratedQuestion[];
+  },
 ): Promise<RoundPayload> {
   const language = input.language ?? DEFAULT_LANGUAGE;
-  const questions = await generateRound({
-    topic: input.topic,
-    objective: input.objective,
-    round: 1,
-    history: [],
-    diagnosticScore: null,
-    language,
-  });
+  const questions =
+    input.questions?.length
+      ? input.questions
+      : await generateRound({
+          topic: input.topic,
+          objective: input.objective,
+          round: 1,
+          history: [],
+          diagnosticScore: null,
+          language,
+        });
 
   const doc = new KnowledgeAssessmentModel({
     userId: new Types.ObjectId(userId),
@@ -140,7 +156,12 @@ async function findOwned(userId: string, id: string) {
   if (!Types.ObjectId.isValid(id)) throw new ApiError(404, "Assessment not found");
   const doc = await KnowledgeAssessmentModel.findOne({ _id: id, userId: new Types.ObjectId(userId) });
   if (!doc) throw new ApiError(404, "Assessment not found");
-  return doc as unknown as Doc & { save: () => Promise<unknown> };
+  // markModified is needed because `profile` is a Mixed path — mongoose cannot
+  // see in-place changes to it otherwise.
+  return doc as unknown as Doc & {
+    save: () => Promise<unknown>;
+    markModified: (path: string) => void;
+  };
 }
 
 export async function getAssessment(userId: string, id: string): Promise<RoundPayload | DonePayload> {
@@ -161,19 +182,33 @@ function donePayload(doc: Doc): DonePayload {
   };
 }
 
+/** What recordRound hands back so a caller can decide what happens next. */
+export interface RecordedRound {
+  complete: boolean;
+  history: AnsweredQuestion[];
+  answered: number;
+}
+
 /**
- * Records one round's answers, then either generates the next round or closes
- * the assessment with a profile. Diagnostics are scored here by matching the
- * submitted text against the stored options — the client is never told which
- * option was right, so it cannot be scored there.
+ * Records and SCORES one round's answers, without deciding what comes next.
+ *
+ * Scoring happens here by matching the submitted text against the stored
+ * options: `correctIndex` is stripped before any payload leaves the server, so
+ * the client cannot score itself and cannot be trusted to.
+ *
+ * Split out of submitRound so the guided intake can own what follows — it
+ * writes its own report from the whole interview rather than letting the
+ * profiler write one from these questions alone.
  */
-export async function submitRound(
+export async function recordRound(
   userId: string,
   id: string,
   input: { round: number; answers: { answer: string }[] },
-): Promise<RoundPayload | DonePayload> {
+): Promise<RecordedRound> {
   const doc = await findOwned(userId, id);
-  if (doc.status === "completed") return donePayload(doc);
+  if (doc.status === "completed") {
+    return { complete: true, history: history(doc), answered: doc.answers.length };
+  }
   if (input.round !== doc.round) {
     throw new ApiError(409, `This knowledge check is on round ${doc.round}.`);
   }
@@ -198,10 +233,92 @@ export async function submitRound(
       ...(correct === undefined ? {} : { correct }),
     });
   }
+  await doc.save();
+  return {
+    complete: doc.round >= TOTAL_ROUNDS,
+    history: history(doc),
+    answered: doc.answers.length,
+  };
+}
+
+/**
+ * How the student actually did, computed from the stored answer key. Exposed
+ * so the guided intake can hand the number to its report writer as a fact
+ * rather than asking a model to work it out from a transcript.
+ */
+export async function diagnosticResult(
+  userId: string,
+  id: string,
+): Promise<{ correct: number; total: number; score: number | null }> {
+  const doc = await findOwned(userId, id);
+  return scoreDiagnostics(history(doc));
+}
+
+/** Closes an assessment with a profile written elsewhere (the intake's report). */
+export async function closeWithProfile(
+  userId: string,
+  id: string,
+  profile: KnowledgeProfile,
+): Promise<void> {
+  const doc = await findOwned(userId, id);
+  doc.profile = profile as unknown as typeof doc.profile;
+  doc.status = "completed";
+  doc.markModified("profile");
+  await doc.save();
+}
+
+/**
+ * A completed assessment for a student whose intake never asked a diagnostic.
+ *
+ * Without this, skipping the probe would leave latestProfile() with nothing to
+ * find, and the course-maker would silently lose the whole learner picture —
+ * the profile is how everything downstream (course outline, chapter writers,
+ * project planner, and recordQuizOutcome folding lecture exams back in) knows
+ * who it is teaching.
+ */
+export async function createCompletedAssessment(
+  userId: string,
+  input: {
+    topic: string;
+    objective: string;
+    scope?: "single" | "multi";
+    language?: Language;
+    profile: KnowledgeProfile;
+  },
+): Promise<string> {
+  const doc = await KnowledgeAssessmentModel.create({
+    userId: new Types.ObjectId(userId),
+    topic: input.topic,
+    objective: input.objective,
+    scope: input.scope ?? "single",
+    language: input.language ?? DEFAULT_LANGUAGE,
+    round: 1,
+    asked: [],
+    answers: [],
+    status: "completed",
+    profile: input.profile,
+  });
+  return String(doc._id);
+}
+
+/**
+ * Records one round's answers, then either generates the next round or closes
+ * the assessment with a profile written by the knowledge profiler. Used by the
+ * standalone /api/assessments route; the guided intake uses recordRound plus
+ * its own report instead.
+ */
+export async function submitRound(
+  userId: string,
+  id: string,
+  input: { round: number; answers: { answer: string }[] },
+): Promise<RoundPayload | DonePayload> {
+  const recorded = await recordRound(userId, id, input);
+  const doc = await findOwned(userId, id);
+  if (doc.status === "completed") return donePayload(doc);
 
   const language = (doc.language as Language | undefined) ?? DEFAULT_LANGUAGE;
 
-  if (doc.round >= TOTAL_ROUNDS) {
+  if (recorded.complete) {
     const profile = await buildProfile({
       topic: doc.topic,
       objective: doc.objective,
