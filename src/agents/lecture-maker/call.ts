@@ -13,7 +13,7 @@ import {
  */
 
 export { formatZodIssues } from "../shared/forcedToolCall.js";
-export type { LlmDeps, ParseResult } from "../shared/forcedToolCall.js";
+export type { LlmDeps, ParseAttempt, ParseResult } from "../shared/forcedToolCall.js";
 
 export type LectureRole = "classifier" | "analyst" | "planner" | "worker" | "svg" | "resources";
 

@@ -34,6 +34,19 @@ export function formatZodIssues(error: z.ZodError): string {
 
 export type ParseResult<T> = { success: true; data: T } | { success: false; issues: string };
 
+/**
+ * Where in the retry budget this parse is happening. `isFinal` is the useful
+ * one: a parser that can salvage a nearly-good emission should still REJECT it
+ * early — a repair round produces better output than any local fix — but on the
+ * last attempt the choice is no longer "salvage or repair", it is "salvage or
+ * throw away everything the pipeline has built".
+ */
+export interface ParseAttempt {
+  /** 0-based. */
+  attempt: number;
+  isFinal: boolean;
+}
+
 export interface ForcedToolCallOptions<T> {
   deps: LlmDeps;
   tool: OpenAI.Chat.ChatCompletionFunctionTool;
@@ -42,8 +55,12 @@ export interface ForcedToolCallOptions<T> {
   /**
    * May be async: the svg worker renders the drawing in a browser and shows it
    * to a vision model before deciding whether to accept it.
+   *
+   * `at` is optional to use — most parsers judge the payload alone. Parsers that
+   * can salvage a near-miss read `at.isFinal` to decide between rejecting for a
+   * repair round and accepting a reconciled payload.
    */
-  parse: (raw: unknown) => ParseResult<T> | Promise<ParseResult<T>>;
+  parse: (raw: unknown, at: ParseAttempt) => ParseResult<T> | Promise<ParseResult<T>>;
   /** Appended to the truncation repair message, e.g. "Emit fewer, shorter blocks." */
   sizeHint: string;
   /** Per-call output cap. */
@@ -96,7 +113,8 @@ export async function runForcedToolCall<T>(opts: ForcedToolCallOptions<T>): Prom
     );
 
     const choice: Choice = completion.choices?.[0];
-    const result = await extract(choice, name, opts.parse, opts.sizeHint);
+    const at: ParseAttempt = { attempt, isFinal: attempt === maxAttempts - 1 };
+    const result = await extract(choice, name, opts.parse, opts.sizeHint, at);
     if ("payload" in result) return result.payload;
     if (attempt >= maxAttempts - 1) break;
 
@@ -120,8 +138,9 @@ export async function runForcedToolCall<T>(opts: ForcedToolCallOptions<T>): Prom
 async function extract<T>(
   choice: Choice,
   name: string,
-  parse: (raw: unknown) => ParseResult<T> | Promise<ParseResult<T>>,
+  parse: (raw: unknown, at: ParseAttempt) => ParseResult<T> | Promise<ParseResult<T>>,
   sizeHint: string,
+  at: ParseAttempt,
 ): Promise<Extraction<T>> {
   // Truncation is checked FIRST: when a response is cut off badly enough, the
   // tool call never materialises at all, and the missing-call branch below
@@ -140,7 +159,7 @@ async function extract<T>(
   } catch {
     return { issue: `The ${name} arguments were not valid JSON. Call ${name} again with valid JSON. ${sizeHint}` };
   }
-  const parsed = await parse(raw);
+  const parsed = await parse(raw, at);
   if (!parsed.success) {
     return { issue: `The structure had problems: ${parsed.issues}. Call ${name} again with these fixed.` };
   }

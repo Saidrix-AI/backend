@@ -7,6 +7,7 @@ import { CourseModel, type Course } from "../database/models/course.model.js";
 import { LectureModel } from "../database/models/lecture.model.js";
 import { LecturePositionModel } from "../database/models/lecturePosition.model.js";
 import { ApiError } from "../utils/apiError.js";
+import { logger } from "../utils/logger.js";
 import { assertCourseEnterable } from "./activeSelection.service.js";
 
 export type { LectureProgressEvent } from "../agents/lecture-maker/index.js";
@@ -332,6 +333,26 @@ function startJob(userId: string, lessonId: string): GenerationJob {
     }
   })().finally(() => jobs.delete(lessonId));
 
+  // The only honest record of how a generation ended.
+  //
+  // `POST /:lessonId/generate/stream` flushes its SSE headers before any work
+  // starts, so the access log reports 200 whether the lecture was written or the
+  // pipeline threw 40 seconds in — a total failure and a success are
+  // indistinguishable there. Without this line the sole trace of a failed run is
+  // a `[lecture-maker] … rejected` warning that names a topic but never says the
+  // lecture died, and the next clue is a 404 on a lesson that was just built.
+  //
+  // Attaching a rejection handler here also stops the job promise counting as an
+  // unhandled rejection when every subscriber has disconnected.
+  promise.then(
+    () => logger.info({ lessonId }, "lecture generated"),
+    (error: unknown) =>
+      logger.error(
+        { lessonId, err: error instanceof Error ? error.message : String(error) },
+        "lecture generation failed — nothing persisted",
+      ),
+  );
+
   const job: GenerationJob = { promise, emitter, history };
   jobs.set(lessonId, job);
   return job;
@@ -407,7 +428,11 @@ export async function* streamLectureGeneration(
       });
     }
     const result = settled as { lecture?: LectureJson; error?: unknown };
-    if (result.error) {
+    // Presence, not truthiness. A job that rejects with a falsy reason (an
+    // aborted upstream call, `throw undefined`) used to fall through to the
+    // `done` branch and hand the client `lecture: undefined` on a 200 — which
+    // the classroom then tried to open, got a 404, and regenerated from scratch.
+    if ("error" in result) {
       yield {
         type: "error",
         message: result.error instanceof Error ? result.error.message : "Lecture generation failed",
