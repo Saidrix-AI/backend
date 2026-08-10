@@ -9,7 +9,6 @@ import {
   findPathEntryByObjective,
 } from "../../services/learningPath.service.js";
 import type { CoursePathMeta } from "../../services/course.service.js";
-import { retrieveKnowledge, toSources } from "../../rag/retriever.js";
 import { makeCourse } from "../course-maker/index.js";
 import { buildPathBoundary } from "../course-maker/prompt.js";
 import { generateCourseTool, proposeCoursesTool } from "./prompts/course-maker.js";
@@ -135,21 +134,16 @@ const generateCourse: RegisteredTool = {
         modelText += ` Some projects could not be created: ${projectErrors.join(", ")}.`;
       }
 
-      // Surface which curriculum guides grounded this course, so the student can
-      // see the knowledge base was used (chip + sources in the chat UI).
-      const effObjective = pathBrief.objective ?? parsed.data.objective;
-      const kb = await retrieveKnowledge(effObjective, { topK: 6 }).catch(() => []);
-      const guides = [...new Set(kb.map((c) => c.skill))].filter(Boolean);
-      if (guides.length) {
-        modelText += ` Grounded in the Saidrix knowledge base (${guides.join(", ")}).`;
-      }
-
+      // No knowledge-base sources here. This used to run a SECOND retrieval —
+      // on top of the one that actually grounds the writing (course-maker/
+      // generator.ts and expand.ts) — purely so the chat could list the guides
+      // it drew on. Now that the curriculum citation strip is gone, that was an
+      // extra embed + Pinecone round-trip per course for nothing.
       return {
         ok: true,
         changed: "course",
         label: `Course "${course.title}" created (${course.lessons} lessons${projPart})`,
         modelText,
-        ...(kb.length ? { sources: toSources(kb) } : {}),
       };
     } catch (err) {
       return failure("Couldn't generate course", err);

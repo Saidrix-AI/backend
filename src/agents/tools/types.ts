@@ -70,7 +70,12 @@ export interface ToolOutcome {
   modelText: string;
   /** Set when a write succeeded — which page's data changed. */
   changed?: "course" | "project" | "routine";
-  /** web_search only. */
+  /**
+   * web_search only — and it must stay that way. These render as the clickable
+   * "Sources" strip, so every entry needs to be a page the student can open.
+   * The curriculum search deliberately returns none: its hits are internal file
+   * paths (see agents/tools/course-content-search.ts).
+   */
   sources?: SearchSource[];
   /** propose_courses only — structured payload for the selection-cards UI. */
   proposal?: ProposedCourse[];

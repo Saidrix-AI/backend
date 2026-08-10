@@ -11,6 +11,22 @@ import { ragConfig } from "../config/env.js";
 
 const BATCH_SIZE = 96;
 
+/**
+ * Retrieval is best-effort — a failed embedding silently costs a course or
+ * lecture its curriculum grounding — so it is worth a couple of extra tries.
+ * Observed live: one `APIConnectionError: Connection error.` against the
+ * embeddings endpoint dropped grounding for an entire lecture.
+ *
+ * The two callers want opposite deadlines, so the budget is per request rather
+ * than on the client. A healthy single-vector call to OpenRouter still takes
+ * ~4.5s, and it sits in front of an interactive chat turn, so it must give up
+ * and retry quickly. An ingest batch of 96 legitimately takes far longer and
+ * must not be cut off mid-run. Both beat the SDK's 10-minute default.
+ */
+const RETRIES = 4;
+const QUERY_TIMEOUT_MS = 20_000;
+const BATCH_TIMEOUT_MS = 120_000;
+
 let client: OpenAI | null = null;
 
 function getClient(): OpenAI {
@@ -27,7 +43,7 @@ function getClient(): OpenAI {
 }
 
 /** Embeds many texts, batched, preserving input order. */
-export async function embed(texts: string[]): Promise<number[][]> {
+export async function embed(texts: string[], timeoutMs = BATCH_TIMEOUT_MS): Promise<number[][]> {
   if (!ragConfig.embeddingModel) {
     throw new Error("EMBEDDING_MODEL is not configured.");
   }
@@ -38,7 +54,10 @@ export async function embed(texts: string[]): Promise<number[][]> {
 
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE);
-    const res = await oai.embeddings.create({ model: ragConfig.embeddingModel, input: batch });
+    const res = await oai.embeddings.create(
+      { model: ragConfig.embeddingModel, input: batch },
+      { timeout: timeoutMs, maxRetries: RETRIES },
+    );
 
     if (!res.data || res.data.length !== batch.length) {
       throw new Error(
@@ -61,9 +80,9 @@ export async function embed(texts: string[]): Promise<number[][]> {
   return out;
 }
 
-/** Convenience for a single query embedding. */
+/** Convenience for a single query embedding — the interactive, fail-fast path. */
 export async function embedOne(text: string): Promise<number[]> {
-  const [vector] = await embed([text]);
+  const [vector] = await embed([text], QUERY_TIMEOUT_MS);
   if (!vector) throw new Error("Embedding returned no vector.");
   return vector;
 }

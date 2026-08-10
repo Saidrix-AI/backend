@@ -14,6 +14,7 @@ import {
   type AssessmentStart,
   type IntakeStart,
 } from "../agents/chat-agent/index.js";
+import { SEARCH_COURSE_CONTENT_TOOL_NAME } from "../agents/tools/course-content-search.js";
 import { ConversationModel } from "../database/models/conversation.model.js";
 import {
   EXTRACT_WINDOW,
@@ -22,6 +23,15 @@ import {
 import { ApiError } from "../utils/apiError.js";
 import { buildStudentContext } from "./studentMemory.service.js";
 import { distillConversation } from "../agents/memory-distiller/index.js";
+
+/**
+ * Tools whose completion is never kept as a message "action".
+ *
+ * Both are retrieval the student neither asked for nor can act on. Everything
+ * else in this set's spirit — created a course, cleared a routine — is a real
+ * change worth showing when the conversation is reopened.
+ */
+const HIDDEN_ACTION_TOOLS = new Set(["web_search", SEARCH_COURSE_CONTENT_TOOL_NAME]);
 
 export interface ChatResult {
   reply: string;
@@ -161,7 +171,11 @@ export async function* streamMessage(
       else if (ev.type === "ask_questions") questions = ev.questions;
       else if (ev.type === "assessment") assessment = ev.assessment;
       else if (ev.type === "intake") intake = ev.intake;
-      else if (ev.type === "tool_result" && ev.name !== "web_search") {
+      // Both exempt tools are plumbing, not activity worth replaying: a search
+      // the student did not ask for and cannot act on. The chips are suppressed
+      // in the UI too, so persisting them would only put a "Curriculum search
+      // complete" line back on screen the next time the chat is opened.
+      else if (ev.type === "tool_result" && !HIDDEN_ACTION_TOOLS.has(ev.name)) {
         actions.push({ name: ev.name, label: ev.label, ok: ev.ok, changed: ev.changed });
       }
       yield ev;
