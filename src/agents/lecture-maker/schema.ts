@@ -1341,6 +1341,37 @@ export const emitSetupBlocksTool: OpenAI.Chat.ChatCompletionFunctionTool = {
 };
 
 /**
+ * Pins a writer tool's `blocks` array to the planned length.
+ *
+ * "Emit exactly N blocks" was stated only in prose — in the system prompt, in
+ * the tool description, and in the numbered brief list — and the writers still
+ * returned N+1 often enough to burn both attempts and sink whole lectures. The
+ * count is known at every call site, so it belongs in the JSON Schema where a
+ * provider's structured-output layer can hold the model to it.
+ *
+ * Advisory, not a guarantee: not every provider enforces `minItems`/`maxItems`.
+ * The parse-side count check stays as the real gate.
+ */
+export function withBlockCount(
+  tool: OpenAI.Chat.ChatCompletionFunctionTool,
+  count: number,
+): OpenAI.Chat.ChatCompletionFunctionTool {
+  const params = tool.function.parameters as { properties?: { blocks?: Record<string, unknown> } };
+  const blocks = params?.properties?.blocks;
+  if (!blocks) return tool;
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      parameters: {
+        ...params,
+        properties: { ...params.properties, blocks: { ...blocks, minItems: count, maxItems: count } },
+      },
+    },
+  };
+}
+
+/**
  * The downloads picker. Same shape as `emit_resource_picks` and for the same
  * reason: there is no `url` property, so the model can only answer with the
  * number of a candidate our own search returned. A hallucinated installer link

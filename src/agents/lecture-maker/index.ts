@@ -167,23 +167,33 @@ export async function makeLecture(
     svgBlocks: svgPlanned.length,
   });
 
-  // Topic worker failures propagate (502 — never cache a partial lecture);
-  // svg workers resolve to null on failure (block dropped, lecture ships).
+  // A topic worker that fails every attempt no longer sinks the lecture: the
+  // topic is dropped and the rest ships (see pruneFailedTopics for the two cases
+  // where that is not allowed and the failure still propagates). svg workers
+  // resolve to null on failure (block dropped, lecture ships).
   const topicTotal = easyByTopic.size;
-  const topicJobs = [...easyByTopic.entries()].map(async ([topicId, planned], index) => {
+  const topicJobs = [...easyByTopic.entries()].map(async ([topicId, planned], index): Promise<TopicOutcome> => {
     const topic = topicById.get(topicId)!; // plan superRefine guarantees membership
     onProgress?.({ stage: "topic", status: "start", index, total: topicTotal, title: topic.title });
-    const blocks = await runTopicWorker(
-      ctx,
-      plan.title,
-      { id: topic.id, title: topic.title },
-      planned,
-      blueprint,
-      plan.outline,
-      workerDeps,
-    );
-    onProgress?.({ stage: "topic", status: "done", index, total: topicTotal, title: topic.title });
-    return [topicId, blocks] as const;
+    try {
+      const blocks = await runTopicWorker(
+        ctx,
+        plan.title,
+        { id: topic.id, title: topic.title },
+        planned,
+        blueprint,
+        plan.outline,
+        workerDeps,
+      );
+      onProgress?.({ stage: "topic", status: "done", index, total: topicTotal, title: topic.title });
+      return { topicId, blocks };
+    } catch (error) {
+      // Reported as "done" to the loading screen on purpose: the student is
+      // watching a progress bar, and a stage that goes red on a lecture that
+      // still arrives complete-looking is worse than one that quietly finishes.
+      onProgress?.({ stage: "topic", status: "done", index, total: topicTotal, title: topic.title });
+      return { topicId, error };
+    }
   });
 
   // A visual-heavy lecture can plan a dozen svgs. Firing them all at once on
@@ -220,7 +230,12 @@ export async function makeLecture(
 
   onProgress?.({ stage: "assembling" });
 
-  const queues = new Map<number, EasyBlock[]>(topicResults.map(([id, blocks]) => [id, [...blocks]]));
+  const outline = pruneFailedTopics(plan.outline, topicResults, topicById);
+  const kept = new Set(outline.map((t) => t.id));
+  const queues = new Map<number, EasyBlock[]>();
+  for (const r of topicResults) {
+    if ("blocks" in r) queues.set(r.topicId, [...r.blocks]);
+  }
   const svgQueue = [...svgResults];
 
   // Assembly: walk the plan in order, pulling each block from its queue and
@@ -229,8 +244,13 @@ export async function makeLecture(
   let n = 0;
   for (const planned of plan.blocks) {
     if (planned.type === "svg") {
+      // The shift happens BEFORE the dropped-topic check: svgQueue is positional
+      // against the plan's svg entries, so skipping one without consuming it
+      // would hand this drawing to the next svg block and misalign every
+      // diagram after it.
       const emission = svgQueue.shift();
       if (!emission) continue; // already warned in runSvgWorker
+      if (!kept.has(planned.topicId)) continue;
       blocks.push({
         id: `b${++n}`,
         type: "svg",
@@ -240,9 +260,11 @@ export async function makeLecture(
         ...(emission.caption ? { caption: emission.caption } : {}),
       });
     } else {
+      if (!kept.has(planned.topicId)) continue;
       const block = queues.get(planned.topicId)?.shift();
       if (!block) {
-        // Unreachable given the worker count check; never crash assembly on it.
+        // Reachable now: the final-attempt reconcile in workers.ts accepts a
+        // short emission rather than losing the topic. Never crash assembly.
         console.warn(`[lecture-maker] missing worker block for plan entry "${planned.brief.slice(0, 60)}"`);
         continue;
       }
@@ -250,8 +272,8 @@ export async function makeLecture(
     }
   }
 
-  const { outline, blocks: withResources } = appendResources(plan.outline, blocks, resources, n);
-  return finish(ctx, plan.title, "concept", outline, withResources);
+  const { outline: finalOutline, blocks: withResources } = appendResources(outline, blocks, resources, n);
+  return finish(ctx, plan.title, "concept", finalOutline, withResources);
 }
 
 /**
@@ -326,20 +348,29 @@ async function makeSetupLecture(
   });
 
   const topicTotal = easyByTopic.size;
-  const topicJobs = [...easyByTopic.entries()].map(async ([topicId, planned], index) => {
+  // Same resilience as the concept lane: a failed stage costs its own section,
+  // not the guide. pruneFailedTopics still refuses to drop the LAST topic — here
+  // it carries the closing checklist rather than the quiz, but a setup guide
+  // that ends without "did it work?" is just as broken.
+  const topicJobs = [...easyByTopic.entries()].map(async ([topicId, planned], index): Promise<TopicOutcome> => {
     const topic = topicById.get(topicId)!; // plan superRefine guarantees membership
     onProgress?.({ stage: "topic", status: "start", index, total: topicTotal, title: topic.title });
-    const blocks = await runSetupTopicWorker(
-      ctx,
-      plan.title,
-      { id: topic.id, title: topic.title },
-      planned,
-      blueprint,
-      plan.outline,
-      workerDeps,
-    );
-    onProgress?.({ stage: "topic", status: "done", index, total: topicTotal, title: topic.title });
-    return [topicId, blocks] as const;
+    try {
+      const blocks = await runSetupTopicWorker(
+        ctx,
+        plan.title,
+        { id: topic.id, title: topic.title },
+        planned,
+        blueprint,
+        plan.outline,
+        workerDeps,
+      );
+      onProgress?.({ stage: "topic", status: "done", index, total: topicTotal, title: topic.title });
+      return { topicId, blocks };
+    } catch (error) {
+      onProgress?.({ stage: "topic", status: "done", index, total: topicTotal, title: topic.title });
+      return { topicId, error };
+    }
   });
 
   const [topicResults, downloads, resources] = await Promise.all([
@@ -350,11 +381,17 @@ async function makeSetupLecture(
 
   onProgress?.({ stage: "assembling" });
 
-  const queues = new Map<number, EasyBlock[]>(topicResults.map(([id, blocks]) => [id, [...blocks]]));
+  const outline = pruneFailedTopics(plan.outline, topicResults, topicById);
+  const kept = new Set(outline.map((t) => t.id));
+  const queues = new Map<number, EasyBlock[]>();
+  for (const r of topicResults) {
+    if ("blocks" in r) queues.set(r.topicId, [...r.blocks]);
+  }
 
   const blocks: Record<string, unknown>[] = [];
   let n = 0;
   for (const planned of plan.blocks) {
+    if (!kept.has(planned.topicId)) continue;
     if (planned.type === "downloads") {
       // A failed search drops the section rather than the guide. The steps that
       // follow still tell the student what to install; they just have to find
@@ -374,8 +411,8 @@ async function makeSetupLecture(
     blocks.push({ ...block, id: `b${++n}`, topicId: planned.topicId });
   }
 
-  const { outline, blocks: withResources } = appendResources(plan.outline, blocks, resources, n);
-  return finish(ctx, plan.title, "setup", outline, withResources);
+  const { outline: finalOutline, blocks: withResources } = appendResources(outline, blocks, resources, n);
+  return finish(ctx, plan.title, "setup", finalOutline, withResources);
 }
 
 /**
@@ -419,6 +456,54 @@ function appendResources(
     outline: [...outline, { id: topicId, title: resources.topicTitle, duration: "1:00" }],
     blocks: [...blocks, { ...resources.block, id: `b${lastBlockNumber + 1}`, topicId }],
   };
+}
+
+/** What a settled topic job carries: its blocks, or the reason it never produced any. */
+type TopicOutcome = { topicId: number; blocks: EasyBlock[] } | { topicId: number; error: unknown };
+
+/**
+ * Drops the topics whose writer failed every attempt, so one bad topic costs its
+ * own section instead of the whole lecture. Previously any topic failure threw,
+ * which meant a ~40s pipeline run — every sibling worker, every diagram, the
+ * resource search — was binned and nothing was persisted, and the client, seeing
+ * a 404, started the entire run again.
+ *
+ * Two cases where dropping is NOT allowed and the original error is rethrown:
+ *
+ *  - The LAST outline topic. The graded quiz must be the final block and must
+ *    belong to the final topic (see lecturePlanSchema's superRefine); dropping
+ *    it would ship a lecture whose closing exam silently vanished, and that exam
+ *    is what updates the student's knowledge profile.
+ *  - Anything that would leave fewer than two topics — assembledLectureSchema
+ *    requires `outline` to have at least 2, so the lecture would fail whole-
+ *    document validation moments later with a far less useful message.
+ */
+function pruneFailedTopics(
+  outline: OutlineItem[],
+  results: TopicOutcome[],
+  topicById: Map<number, OutlineItem>,
+): OutlineItem[] {
+  const failed = results.filter((r): r is { topicId: number; error: unknown } => "error" in r);
+  if (failed.length === 0) return outline;
+
+  const rethrow = (why: string) => {
+    console.error(`[lecture-maker] cannot ship without topic ${failed[0]!.topicId} (${why}) — failing the lecture`);
+    throw failed[0]!.error;
+  };
+
+  const lastTopicId = outline[outline.length - 1]?.id;
+  if (failed.some((f) => f.topicId === lastTopicId)) rethrow("it is the final topic and carries the quiz");
+
+  const failedIds = new Set(failed.map((f) => f.topicId));
+  const remaining = outline.filter((t) => !failedIds.has(t.id));
+  if (remaining.length < 2) rethrow("fewer than 2 topics would remain");
+
+  for (const f of failed) {
+    const title = topicById.get(f.topicId)?.title ?? "?";
+    const reason = f.error instanceof Error ? f.error.message : String(f.error);
+    console.warn(`[lecture-maker] shipping without topic ${f.topicId} ("${title}"): ${reason}`);
+  }
+  return remaining;
 }
 
 /** Whole-document validation, shared by both lanes. A failure here is a pipeline bug. */

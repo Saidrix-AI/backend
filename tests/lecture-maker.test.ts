@@ -797,6 +797,91 @@ describe("runTopicWorker", () => {
     expect(raw.blocks[0]).not.toHaveProperty("type");
   });
 
+  // Stamping the planned type on position alone used to MANUFACTURE
+  // "blocks.N.code: Required" — a validation failure invented by the repair, on
+  // prose the model never meant as code. Seen live, and it cost whole lectures.
+  it("does not stamp a planned type the block cannot support", () => {
+    const raw = { blocks: [{ text: "prose, not a snippet" }, { text: "more prose" }] };
+    backfillMissingTypes(raw, [
+      { type: "code", topicId: 1, brief: "c" },
+      { type: "paragraph", topicId: 1, brief: "p" },
+    ]);
+    expect(raw.blocks[0]).toMatchObject({ type: "paragraph" });
+    expect(raw.blocks[1]).toMatchObject({ type: "paragraph" });
+  });
+
+  it("still stamps the planned type when the payload supports it", () => {
+    const raw = { blocks: [{ code: "print(1)", language: "python" }] };
+    backfillMissingTypes(raw, [{ type: "code", topicId: 1, brief: "c" }]);
+    expect(raw.blocks[0]).toMatchObject({ type: "code" });
+  });
+
+  // The two defects used to be reported sequentially, so a repair round fixed
+  // the field, still failed the count, and the second failure sank the lecture.
+  it("reports the count mismatch together with the schema issues", async () => {
+    const broken = [
+      { type: "paragraph", text: "ok" },
+      { type: "code", language: "python" }, // no `code` — a real Zod issue
+      { type: "paragraph", text: "and a third, against a planned 2" },
+    ];
+    const { deps, create } = fakeDeps(
+      toolCallResponse("emit_topic_blocks", { blocks: broken }),
+      toolCallResponse("emit_topic_blocks", { blocks: goodBlocks }),
+    );
+    await expect(run(deps)).resolves.toHaveLength(2);
+    const repair = sentMessages(create, 1);
+    expect(repair).toContain("blocks.1.code");
+    expect(repair).toContain("expected exactly 2 blocks");
+  });
+
+  // The repair round is still preferred — it rewrites the content properly.
+  it("rejects an over-count on the first attempt rather than trimming it", async () => {
+    const { deps, create } = fakeDeps(
+      toolCallResponse("emit_topic_blocks", { blocks: [...goodBlocks, { type: "paragraph", text: "extra" }] }),
+      toolCallResponse("emit_topic_blocks", { blocks: goodBlocks }),
+    );
+    const blocks = await run(deps);
+    expect(blocks.map((b) => b.type)).toEqual(["paragraph", "code"]);
+    expect(sentMessages(create, 1)).toContain("expected exactly 2 blocks");
+  });
+
+  // On the last attempt the choice is no longer "trim or repair", it is "trim or
+  // throw the whole lecture away".
+  it("trims an over-count on the final attempt instead of failing", async () => {
+    const overCount = [...goodBlocks, { type: "paragraph", text: "one block too many" }];
+    const { deps } = fakeDeps(
+      toolCallResponse("emit_topic_blocks", { blocks: overCount }),
+      toolCallResponse("emit_topic_blocks", { blocks: overCount }),
+    );
+    const blocks = await run(deps);
+    expect(blocks.map((b) => b.type)).toEqual(["paragraph", "code"]);
+  });
+
+  it("accepts a short emission on the final attempt — assembly tolerates the gap", async () => {
+    const short = goodBlocks.slice(0, 1);
+    const { deps } = fakeDeps(
+      toolCallResponse("emit_topic_blocks", { blocks: short }),
+      toolCallResponse("emit_topic_blocks", { blocks: short }),
+    );
+    await expect(run(deps)).resolves.toHaveLength(1);
+  });
+
+  it("still fails on a genuine schema error at the final attempt", async () => {
+    const bad = [{ type: "code", language: "python" }, { type: "code", language: "js" }];
+    const { deps } = fakeDeps(
+      toolCallResponse("emit_topic_blocks", { blocks: bad }),
+      toolCallResponse("emit_topic_blocks", { blocks: bad }),
+    );
+    await expect(run(deps)).rejects.toMatchObject({ statusCode: 502 });
+  });
+
+  it("pins the planned block count into the tool schema the model is given", async () => {
+    const { deps, create } = fakeDeps(toolCallResponse("emit_topic_blocks", { blocks: goodBlocks }));
+    await run(deps);
+    const tool = create.mock.calls[0]![0].tools[0];
+    expect(tool.function.parameters.properties.blocks).toMatchObject({ minItems: 2, maxItems: 2 });
+  });
+
   it("sends the shared examples and the full outline to the writer", async () => {
     const { deps, create } = fakeDeps(toolCallResponse("emit_topic_blocks", { blocks: goodBlocks }));
     await run(deps);
@@ -993,6 +1078,93 @@ describe("makeLecture", () => {
   it("propagates a 502 when a topic worker fails both attempts", async () => {
     const worker = fakeDeps(textResponse("no"), textResponse("still no"), textResponse("no"), textResponse("no"));
     await expect(makeLecture(LESSON_CTX, pipelineDeps({ worker }))).rejects.toMatchObject({ statusCode: 502 });
+  });
+
+  // A failing topic used to reject Promise.all, which threw away the whole run —
+  // every sibling worker, every diagram, the resource search — and persisted
+  // nothing, so the classroom 404'd and started the entire pipeline again.
+  //
+  // These need a THREE-topic plan: with two, dropping either one leaves fewer
+  // than the two topics assembledLectureSchema requires, so the guard fires and
+  // the prune path is never reached.
+  describe("a failed topic does not sink the lecture", () => {
+    const threeTopicPlan = () => ({
+      title: "Binary Search Deep Dive",
+      outline: [
+        { id: 1, title: "Intuition", duration: "4:30" },
+        { id: 2, title: "Implementation", duration: "6:00" },
+        { id: 3, title: "Complexity", duration: "3:00" },
+      ],
+      blocks: [
+        { type: "heading", topicId: 1, brief: "Intro heading" },
+        { type: "paragraph", topicId: 1, brief: "The problem" },
+        { type: "paragraph", topicId: 1, brief: "Why halving works" },
+        { type: "heading", topicId: 2, brief: "The code" },
+        { type: "code", topicId: 2, brief: "Python implementation" },
+        { type: "paragraph", topicId: 2, brief: "Walking the bounds" },
+        { type: "heading", topicId: 3, brief: "Cost" },
+        { type: "paragraph", topicId: 3, brief: "Why it is logarithmic" },
+        { type: "quiz", topicId: 3, brief: "Questions across the lecture" },
+      ],
+    });
+    const blocksFor = (label: string) => [
+      { type: "heading", text: `${label} heading` },
+      { type: "paragraph", text: `${label} first paragraph, long enough to read as real prose.` },
+      { type: "paragraph", text: `${label} second paragraph, also long enough to read as real prose.` },
+    ];
+    const lastTopicBlocks = [
+      { type: "heading", text: "Cost" },
+      { type: "paragraph", text: "Each step halves the range, so the work is logarithmic in the input size." },
+      {
+        type: "quiz",
+        questions: [
+          { question: "Complexity?", options: ["O(n)", "O(log n)"], correctIndex: 1, explanation: "It halves each step." },
+        ],
+      },
+    ];
+
+    /** Worker responses are handed out in call order: topic 1, 2, 3, then repairs. */
+    const deps = (...workerResponses: unknown[]) => ({
+      classifier: fakeDeps(toolCallResponse("emit_lesson_kind", { kind: "concept", reason: "teaches loops" })).deps,
+      analyst: fakeDeps(toolCallResponse("emit_lesson_blueprint", validBlueprint())).deps,
+      planner: fakeDeps(toolCallResponse("emit_lecture_plan", threeTopicPlan())).deps,
+      worker: fakeDeps(...workerResponses).deps,
+      svg: fakeDeps().deps,
+    });
+
+    it("ships without a middle topic whose worker failed every attempt", async () => {
+      const made = await makeLecture(
+        LESSON_CTX,
+        deps(
+          toolCallResponse("emit_topic_blocks", { blocks: blocksFor("Intuition") }),
+          textResponse("topic 2 gives up"),
+          toolCallResponse("emit_topic_blocks", { blocks: lastTopicBlocks }),
+          textResponse("topic 2 gives up again"),
+        ),
+      );
+      // Topic 2 is gone from the outline as well as the blocks — an outline
+      // entry with nothing under it is a section the classroom cannot open.
+      expect(made.outline.map((t) => t.id)).toEqual([1, 3]);
+      expect(made.blocks.every((b) => b.topicId !== 2)).toBe(true);
+      // Ids stay contiguous across the hole.
+      expect(made.blocks.map((b) => b.id)).toEqual(["b1", "b2", "b3", "b4", "b5", "b6"]);
+      // The graded quiz still closes it.
+      expect(made.blocks.at(-1)!.type).toBe("quiz");
+    });
+
+    it("refuses to drop the final topic, because it carries the quiz", async () => {
+      await expect(
+        makeLecture(
+          LESSON_CTX,
+          deps(
+            toolCallResponse("emit_topic_blocks", { blocks: blocksFor("Intuition") }),
+            toolCallResponse("emit_topic_blocks", { blocks: blocksFor("Implementation") }),
+            textResponse("topic 3 gives up"),
+            textResponse("topic 3 gives up again"),
+          ),
+        ),
+      ).rejects.toMatchObject({ statusCode: 502 });
+    });
   });
 });
 
