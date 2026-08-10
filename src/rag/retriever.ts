@@ -60,8 +60,15 @@ export async function retrieveKnowledge(
       }))
       .filter((c) => c.text);
   } catch (err) {
+    // Name the consequence, not just the error. This returns [] and the caller
+    // carries on ungrounded, so the bare message this used to log read as noise
+    // next to the pipeline's other warnings — when it actually means a course or
+    // lecture was written without the curriculum behind it.
+    const reason = err instanceof Error ? `${err.constructor.name}: ${err.message}` : String(err);
     // eslint-disable-next-line no-console
-    console.warn("[rag] retrieval failed:", err instanceof Error ? err.message : err);
+    console.warn(
+      `[rag] no grounding for "${query.slice(0, 60)}" — continuing ungrounded (${reason})`,
+    );
     return [];
   }
 }
