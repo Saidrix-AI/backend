@@ -1,6 +1,11 @@
 import { Types } from "mongoose";
 import { env, isBillingEnabled } from "../config/env.js";
-import { entitlementsFor, planForVariant, type Entitlements } from "../config/entitlements.js";
+import {
+  entitlementsFor,
+  isTrialConfigured,
+  planForVariant,
+  type Entitlements,
+} from "../config/entitlements.js";
 import type { PlanId } from "../config/plans.js";
 import { InvoiceModel } from "../database/models/invoice.model.js";
 import {
@@ -21,32 +26,49 @@ import * as ls from "./lemonSqueezy.client.js";
  * data read straight back from their API — never from anything a browser sent.
  */
 
-export type PlanStatus = "none" | "active" | "grace" | "lapsed";
+export type PlanStatus = "none" | "active" | "grace" | "payment_required" | "lapsed";
 
 /**
  * Does this status still open the app?
  *
  *   on_trial / active      paying, obviously open
  *   past_due               a renewal failed and is being retried for ~2 weeks.
- *                          Open: locking someone out mid-retry punishes an
- *                          expired card, and LemonSqueezy moves them to
- *                          `unpaid` when the retries are exhausted.
+ *                          Open IF they have paid before: locking someone out
+ *                          mid-retry punishes an expired card, and LemonSqueezy
+ *                          moves them to `unpaid` when the retries run out.
  *   cancelled              future payments stopped, but the period they already
  *                          paid for is still running — open until `ends_at`.
  *   paused (mode "free")   we chose to keep serving them without charging.
  *   paused (mode "void")   collection stopped and invoices voided — closed.
  *   unpaid / expired       closed.
+ *
+ * `everPaid` is what the 1-day trial made necessary. The retry grace above is
+ * generous on purpose, and it was safe to be that generous while every
+ * subscription began with a real payment. A trial breaks that: a student whose
+ * very first charge fails would otherwise be handed the full retry window, so
+ * a 1-day free trial becomes a fortnight of free access for anyone willing to
+ * let the charge fail on purpose.
+ *
+ * So retry grace is for customers who have actually paid us. A subscription
+ * that has never collected a penny and cannot collect one now is
+ * `payment_required` — closed, and pointed at a page that says why.
  */
 export function accessFor(
   status: LsSubscriptionStatus | null | undefined,
   endsAt: Date | null | undefined,
   pauseMode = "",
+  everPaid = false,
 ): PlanStatus {
   switch (status) {
     case "on_trial":
     case "active":
-    case "past_due":
       return "active";
+    case "past_due":
+      return everPaid ? "active" : "payment_required";
+    case "unpaid":
+      // Retries exhausted. A proven payer is simply lapsed and belongs on the
+      // billing page; a trial that never paid is held on /complete-payment.
+      return everPaid ? "lapsed" : "payment_required";
     case "paused":
       return pauseMode === "free" ? "active" : "lapsed";
     case "cancelled":
@@ -56,6 +78,17 @@ export function accessFor(
     default:
       return "lapsed";
   }
+}
+
+/**
+ * Whether this deployment can offer a free trial to this account.
+ *
+ * A display hint and a checkout decision, never an access decision. Both halves
+ * matter: `trialConsumedAt` is one-way, so nobody gets a second trial, and with
+ * `TRIAL_DAYS` at zero there is no trial to sell in the first place.
+ */
+export function isTrialAvailableFor(user: { trialConsumedAt?: Date | null }): boolean {
+  return isBillingEnabled() && isTrialConfigured() && !user.trialConsumedAt;
 }
 
 /** Whether a mirrored plan state opens the app. The paywall's whole question. */
@@ -95,8 +128,12 @@ export function appOpenFor(user: {
  *
  * `grace` is stored with an end date; once that date passes the account is
  * lapsed whether or not the `subscription_expired` webhook ever arrived.
- * `none` is preserved rather than collapsed into `lapsed`, because the two lead
- * to different pages — "choose a plan" versus "your plan ended".
+ *
+ * `none` and `payment_required` are both preserved rather than collapsed into
+ * `lapsed`, because all three lead to different pages — "choose a plan",
+ * "your payment did not go through", "your plan ended". Collapsing
+ * `payment_required` would defeat the entire reason it exists as a separate
+ * status, since access-wise it is identical to `lapsed`.
  */
 export function effectiveStatus(user: {
   planStatus?: PlanStatus | null;
@@ -104,6 +141,7 @@ export function effectiveStatus(user: {
 }): PlanStatus {
   const stored = (user.planStatus ?? "none") as PlanStatus;
   if (stored === "none") return "none";
+  if (stored === "payment_required") return "payment_required";
   return hasAccess(user) ? stored : "lapsed";
 }
 
@@ -221,7 +259,6 @@ export async function applySubscriptionState(
   const status = (a.status ?? "expired") as LsSubscriptionStatus;
   const endsAt = toDate(a.ends_at);
   const pauseMode = a.pause?.mode ?? "";
-  const planStatus = accessFor(status, endsAt, pauseMode);
 
   const setFields = {
     lemonSqueezyId,
@@ -285,9 +322,18 @@ export async function applySubscriptionState(
   // `stored < mine`, so the stored timestamp only ever moves forward; the
   // newest event can therefore never be the one that loses.
   let written = false;
+  // The row as it stands after the write. Read back rather than re-queried
+  // because `everPaid` is owned by recordInvoice, not by anything in this
+  // payload — LemonSqueezy does not tell us in a subscription event whether it
+  // has ever collected money.
+  let stored: { everPaid?: boolean } | null = null;
   for (let attempt = 0; attempt < 2 && !written; attempt++) {
     try {
-      await SubscriptionModel.findOneAndUpdate(filter, { $set: setFields }, { upsert: true });
+      stored = await SubscriptionModel.findOneAndUpdate(
+        filter,
+        { $set: setFields },
+        { upsert: true, new: true },
+      );
       written = true;
     } catch (err) {
       if ((err as { code?: number })?.code !== 11000) throw err;
@@ -298,15 +344,26 @@ export async function applySubscriptionState(
     return { applied: false, reason: "stale_event", userId, plan: variant.plan };
   }
 
+  const planStatus = accessFor(status, endsAt, pauseMode, Boolean(stored?.everPaid));
+
   // The mirror. `planSince` only moves when the tier actually changes, so a
   // renewal or a card update does not restart "member since".
-  const user = await UserModel.findById(userId).select("plan planSince").lean();
+  const user = await UserModel.findById(userId)
+    .select("plan planSince trialConsumedAt")
+    .lean();
   const update: Record<string, unknown> = {
     plan: variant.plan,
     planStatus,
     planExpiresAt: planStatus === "grace" ? endsAt : null,
+    trialEndsAt: status === "on_trial" ? toDate(a.trial_ends_at) : null,
   };
   if (user?.plan !== variant.plan || !user?.planSince) update.planSince = new Date();
+  // One-way. The first trial this account ever starts stamps it and nothing
+  // clears it, which is what stops the same account taking the 1-day trial
+  // again and again — checkout reads it to choose which Basic-monthly variant
+  // to mint. Guarded on the stored value so a later `subscription_updated` for
+  // the same trial does not keep pushing the date forward.
+  if (a.trial_ends_at && !user?.trialConsumedAt) update.trialConsumedAt = new Date();
   await UserModel.updateOne({ _id: userId }, { $set: update });
 
   logger.info(
@@ -416,7 +473,56 @@ export async function recordInvoice(
     { upsert: true },
   );
 
+  // Money actually changed hands. This is the only place `everPaid` is ever
+  // set, and it is what buys the account its retry grace from here on — see
+  // accessFor.
+  if (status === "paid" && (a.total ?? 0) > 0) {
+    await SubscriptionModel.updateOne(
+      { userId: new Types.ObjectId(userId), everPaid: { $ne: true } },
+      { $set: { everPaid: true } },
+    );
+    await reopenIfPaymentRequired(userId);
+  }
+
   return { applied: true, userId, plan: sub.plan as PlanId };
+}
+
+/**
+ * Re-derives the plan mirror for an account being held on /complete-payment.
+ *
+ * `subscription_updated` normally reopens the account moments after a payment
+ * succeeds, and this does nothing. It exists for when that event is dropped:
+ * the student would otherwise stay locked out having just paid us, which is the
+ * worst failure this system has — no retry, no self-service way back, and no
+ * reason for them to suspect anything but that they were charged for nothing.
+ *
+ * Scoped to locked accounts only. Every other state is already correct, and
+ * this must not compete with applySubscriptionState for ownership of the mirror.
+ */
+async function reopenIfPaymentRequired(userId: string): Promise<void> {
+  const locked = await UserModel.findOne({ _id: userId, planStatus: "payment_required" })
+    .select("_id")
+    .lean();
+  if (!locked) return;
+
+  const sub = await SubscriptionModel.findOne({ userId: new Types.ObjectId(userId) })
+    .select("status endsAt pauseMode everPaid")
+    .lean();
+  if (!sub) return;
+
+  const planStatus = accessFor(
+    sub.status as LsSubscriptionStatus,
+    sub.endsAt,
+    sub.pauseMode,
+    sub.everPaid,
+  );
+  if (planStatus === "payment_required") return;
+
+  await UserModel.updateOne(
+    { _id: userId },
+    { $set: { planStatus, planExpiresAt: planStatus === "grace" ? sub.endsAt : null } },
+  );
+  logger.info({ userId, planStatus }, "[billing] payment cleared a locked account");
 }
 
 /**
@@ -434,8 +540,12 @@ export async function recordInvoice(
  *
  * Never fatal. A missing receipt must not stop the plan from being restored,
  * which is what the caller actually came for.
+ *
+ * Also called from `GET /billing/invoices`, which is what stops a single failed
+ * attempt here being permanent: this swallows its own errors, and for a long
+ * time nothing ever tried a second time. See the note on that controller.
  */
-async function backfillInvoices(subscriptionId: string, userId: string): Promise<number> {
+export async function backfillInvoices(subscriptionId: string, userId: string): Promise<number> {
   try {
     const invoices = await ls.listSubscriptionInvoices(subscriptionId);
     let recorded = 0;
@@ -464,6 +574,41 @@ async function backfillInvoices(subscriptionId: string, userId: string): Promise
  * after checkout calls, because the webhook is asynchronous and can easily lose
  * the race against the redirect.
  */
+/**
+ * Cancels this account's subscription and applies the result immediately.
+ *
+ * The subscription id is looked up from the user id and never taken from the
+ * request, so a caller can only ever cancel their own — there is no id to
+ * tamper with.
+ *
+ * Feeding LemonSqueezy's response straight back through
+ * `applySubscriptionState` is what makes this synchronous rather than
+ * eventually-consistent. The response carries a fresher `updated_at` than the
+ * stored row, so it passes the staleness filter and the mirror flips to `grace`
+ * before we answer. Waiting for `subscription_cancelled` instead would leave the
+ * page saying "Active" straight after the customer cancelled — which is exactly
+ * what going through the LemonSqueezy portal does today.
+ *
+ * Nothing is deleted and access does not stop: `accessFor` keeps a cancelled
+ * subscription open until the period already paid for runs out.
+ */
+export async function cancelForUser(userId: string): Promise<ApplyResult> {
+  const existing = await SubscriptionModel.findOne({ userId: new Types.ObjectId(userId) })
+    .select("lemonSqueezyId status")
+    .lean();
+  if (!existing?.lemonSqueezyId) {
+    throw new ApiError(404, "You do not have a subscription to cancel.");
+  }
+  if (existing.status === "cancelled" || existing.status === "expired") {
+    throw new ApiError(409, "That subscription is already cancelled.");
+  }
+
+  const live = await ls.cancelSubscription(existing.lemonSqueezyId);
+  const result = await applySubscriptionState(live, userId);
+  logger.info({ userId, applied: result.applied }, "[billing] subscription cancelled by the user");
+  return result;
+}
+
 export async function reconcile(userId: string): Promise<ApplyResult> {
   const user = await UserModel.findById(userId).select("email").lean();
   if (!user) throw new ApiError(404, "Account not found");
@@ -498,8 +643,17 @@ export async function reconcile(userId: string): Promise<ApplyResult> {
 
   // Prefer one that is actually live, then the most recently updated — an
   // account that re-subscribed after cancelling has both.
+  //
+  // `everPaid: true` is passed deliberately. This is ranking candidates by
+  // liveness, not deciding access: a `past_due` subscription is very much the
+  // live one even when it has never collected money, and treating it as
+  // `payment_required` here would make us prefer an older dead subscription
+  // over it. The real access decision is made by applySubscriptionState just
+  // below, against the stored `everPaid`.
   const best =
-    found.find((s) => accessFor(s.attributes?.status as LsSubscriptionStatus, null) === "active") ??
+    found.find(
+      (s) => accessFor(s.attributes?.status as LsSubscriptionStatus, null, "", true) === "active",
+    ) ??
     [...found].sort(
       (x, y) =>
         (toDate(y.attributes?.updated_at)?.getTime() ?? 0) -
@@ -522,6 +676,10 @@ export interface BillingState {
   planStatus: PlanStatus;
   /** Whether the app is open right now. The single question the UI asks. */
   active: boolean;
+  /** Inside the free trial: nothing has been charged yet. */
+  trialing: boolean;
+  /** Whether a trial can still be offered. Display only — checkout re-decides. */
+  trialEligible: boolean;
   entitlements: Entitlements;
   subscription: {
     id: string;
@@ -541,7 +699,7 @@ export interface BillingState {
 
 export async function getBillingState(userId: string): Promise<BillingState> {
   const user = await UserModel.findById(userId)
-    .select("plan planStatus planExpiresAt")
+    .select("plan planStatus planExpiresAt trialConsumedAt")
     .lean();
   if (!user) throw new ApiError(404, "Account not found");
 
@@ -552,6 +710,8 @@ export async function getBillingState(userId: string): Promise<BillingState> {
     plan: (user.plan ?? null) as PlanId | null,
     planStatus,
     active: appOpenFor(user as { planStatus?: PlanStatus; planExpiresAt?: Date | null }),
+    trialing: sub?.status === "on_trial",
+    trialEligible: isTrialAvailableFor(user),
     entitlements: entitlementsFor(user.plan as PlanId | null),
     subscription: sub
       ? {

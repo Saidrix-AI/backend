@@ -71,6 +71,24 @@ const subscriptionSchema = new Schema(
     pauseResumesAt: { type: Date, default: null },
 
     /**
+     * Whether this subscription has ever actually collected money.
+     *
+     * Set by subscription.service.ts#recordInvoice the first time a paid,
+     * non-zero invoice lands, and never unset.
+     *
+     * It exists to answer one question: is `past_due` a customer whose card
+     * just failed, or a trial that never paid at all? LemonSqueezy retries a
+     * failed renewal for roughly two weeks, and we keep those accounts open
+     * because locking someone out mid-retry punishes an expired card. Extending
+     * the same courtesy to a 1-day trial whose very first charge failed would
+     * hand out a fortnight of free access to anyone who let it fail on purpose.
+     *
+     * Retry grace is for customers who have already paid us. This is how we
+     * tell which those are — see subscription.service.ts#accessFor.
+     */
+    everPaid: { type: Boolean, default: false },
+
+    /**
      * True for purchases made with a test-mode API key. Kept so a test row is
      * identifiable after the fact — production refuses to grant a plan from one.
      */
@@ -85,6 +103,17 @@ const subscriptionSchema = new Schema(
      * Older-or-equal timestamps are ignored.
      */
     lsUpdatedAt: { type: Date, default: null },
+
+    /**
+     * When the billing history was last pulled back from LemonSqueezy.
+     *
+     * `GET /billing/invoices` repairs an empty history by calling
+     * `backfillInvoices`, and this is what stops that becoming a request to
+     * LemonSqueezy on every page load. An account can legitimately have no
+     * invoices for a while — a trial that has not converted — and their API
+     * allows 300 calls a minute across the whole store.
+     */
+    invoicesSyncedAt: { type: Date, default: null },
 
     // Signed, valid 24h — cached only so a page can render a link immediately;
     // a fresh one is fetched whenever the user actually clicks through.

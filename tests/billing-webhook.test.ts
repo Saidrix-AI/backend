@@ -23,6 +23,8 @@ process.env.LS_VARIANT_PRO_MONTHLY = "2001";
 process.env.LS_VARIANT_PRO_YEARLY = "2002";
 process.env.LS_VARIANT_PREMIUM_MONTHLY = "3001";
 process.env.LS_VARIANT_PREMIUM_YEARLY = "3002";
+// The Basic variants carry a 1-day trial in the LemonSqueezy dashboard.
+process.env.TRIAL_DAYS = "1";
 
 const { app } = await import("../src/app.js");
 const { UserModel } = await import("../src/database/models/user.model.js");
@@ -41,6 +43,7 @@ interface SubAttrs {
   updated_at?: string;
   ends_at?: string | null;
   renews_at?: string | null;
+  trial_ends_at?: string | null;
   test_mode?: boolean;
   user_email?: string;
   card_last_four?: string;
@@ -296,18 +299,45 @@ describe("granting a plan", () => {
 });
 
 describe("status to access", () => {
-  const cases: Array<[string, SubAttrs, string]> = [
+  /**
+   * A subscription that has already collected money, in place before the event
+   * lands. `applySubscriptionState` upserts onto this row and never writes
+   * `everPaid` itself, so the flag survives.
+   */
+  async function seedProvenPayer() {
+    await SubscriptionModel.create({
+      userId,
+      lemonSqueezyId: "sub_1",
+      plan: "pro",
+      status: "active",
+      everPaid: true,
+    });
+  }
+
+  /**
+   * The fourth column is payment history, and only two statuses read it.
+   *
+   * `past_due` and `unpaid` used to map to a single answer each. They cannot
+   * any more: the retry grace behind them is generous on purpose, and it was
+   * only safe to be that generous while every subscription began with a real
+   * payment. A 1-day trial that never converted would otherwise be handed the
+   * whole retry window — see accessFor.
+   */
+  const cases: Array<[string, SubAttrs, string, boolean?]> = [
     ["active", { status: "active" }, "active"],
     ["on trial", { status: "on_trial" }, "active"],
-    ["past due (still retrying)", { status: "past_due" }, "active"],
+    ["past due, never paid", { status: "past_due" }, "payment_required"],
+    ["past due, has paid before", { status: "past_due" }, "active", true],
     ["paused for free", { status: "paused", pause: { mode: "free" } }, "active"],
     ["paused and voided", { status: "paused", pause: { mode: "void" } }, "lapsed"],
-    ["unpaid", { status: "unpaid" }, "lapsed"],
+    ["unpaid, never paid", { status: "unpaid" }, "payment_required"],
+    ["unpaid, has paid before", { status: "unpaid" }, "lapsed", true],
     ["expired", { status: "expired" }, "lapsed"],
   ];
 
-  for (const [name, attrs, expected] of cases) {
+  for (const [name, attrs, expected, everPaid] of cases) {
     it(`${name} → ${expected}`, async () => {
+      if (everPaid) await seedProvenPayer();
       await send(subscriptionPayload(attrs));
       const user = await UserModel.findById(userId).lean();
       expect(user!.planStatus).toBe(expected);
@@ -398,5 +428,147 @@ describe("events we do not act on", () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.data.ignored).toBe("customer_updated");
+  });
+});
+
+/**
+ * The 1-day free trial, and the thing that makes it safe.
+ *
+ * A trial takes a card and charges nothing. LemonSqueezy attempts the first
+ * real charge when the day is up, and everything below is about what happens on
+ * each side of that moment.
+ */
+describe("free trial", () => {
+  /** Distinct timestamps: an event no newer than the stored one is dropped. */
+  const at = (n: number) => `2026-08-0${n}T00:00:00.000000Z`;
+
+  it("opens the app and stamps the account as having used its trial", async () => {
+    await send(
+      subscriptionPayload({
+        variant_id: 1001,
+        status: "on_trial",
+        trial_ends_at: "2026-08-06T00:00:00.000000Z",
+        updated_at: at(5),
+      }),
+    );
+
+    const user = await UserModel.findById(userId).lean();
+    // A trial is full Basic, not a reduced tier.
+    expect(user!.plan).toBe("basic");
+    expect(user!.planStatus).toBe("active");
+    // One-way, and the whole defence against trialling forever.
+    expect(user!.trialConsumedAt).toBeInstanceOf(Date);
+    // Mirrored onto the session payload so the countdown banner can paint.
+    expect(user!.trialEndsAt).toBeInstanceOf(Date);
+  });
+
+  it("does not move trialConsumedAt on a later event for the same trial", async () => {
+    await send(
+      subscriptionPayload({
+        variant_id: 1001,
+        status: "on_trial",
+        trial_ends_at: "2026-08-06T00:00:00.000000Z",
+        updated_at: at(5),
+      }),
+    );
+    const first = await UserModel.findById(userId).lean();
+
+    await send(
+      subscriptionPayload(
+        {
+          variant_id: 1001,
+          status: "on_trial",
+          trial_ends_at: "2026-08-06T00:00:00.000000Z",
+          updated_at: at(6),
+        },
+        "subscription_updated",
+      ),
+    );
+    const second = await UserModel.findById(userId).lean();
+
+    expect(second!.trialConsumedAt!.getTime()).toBe(first!.trialConsumedAt!.getTime());
+  });
+
+  it("LOCKS an account whose trial charge failed", async () => {
+    // The hole this closes. `past_due` normally keeps the app open for the ~2
+    // weeks LemonSqueezy spends retrying, because locking out an expired card
+    // mid-retry is punitive. Extending that to a trial that never paid would
+    // turn 1 free day into a free fortnight for anyone who let the charge fail.
+    await send(
+      subscriptionPayload({
+        variant_id: 1001,
+        status: "on_trial",
+        trial_ends_at: "2026-08-06T00:00:00.000000Z",
+        updated_at: at(5),
+      }),
+    );
+    await send(
+      subscriptionPayload(
+        { variant_id: 1001, status: "past_due", updated_at: at(6) },
+        "subscription_updated",
+      ),
+    );
+
+    const user = await UserModel.findById(userId).lean();
+    expect(user!.planStatus).toBe("payment_required");
+  });
+
+  it("keeps a PROVEN payer open through the same retries", async () => {
+    // Same status, opposite answer — the distinction `everPaid` exists to make.
+    await send(subscriptionPayload({ updated_at: at(5) }));
+    await send(invoicePayload());
+
+    const paid = await SubscriptionModel.findOne({}).lean();
+    expect(paid!.everPaid).toBe(true);
+
+    await send(
+      subscriptionPayload({ status: "past_due", updated_at: at(6) }, "subscription_updated"),
+    );
+
+    const user = await UserModel.findById(userId).lean();
+    expect(user!.planStatus).toBe("active");
+  });
+
+  it("reopens a locked account when the payment finally lands", async () => {
+    // The safety net for a dropped `subscription_updated`. Without it a student
+    // who has just paid stays locked out with no way back and no reason to
+    // suspect anything except that they were charged for nothing.
+    await send(
+      subscriptionPayload({
+        variant_id: 1001,
+        status: "on_trial",
+        trial_ends_at: "2026-08-06T00:00:00.000000Z",
+        updated_at: at(5),
+      }),
+    );
+    await send(
+      subscriptionPayload(
+        { variant_id: 1001, status: "past_due", updated_at: at(6) },
+        "subscription_updated",
+      ),
+    );
+    expect((await UserModel.findById(userId).lean())!.planStatus).toBe("payment_required");
+
+    // The charge succeeds. Only the invoice event arrives.
+    await SubscriptionModel.updateOne({}, { $set: { status: "active" } });
+    await send(invoicePayload());
+
+    const user = await UserModel.findById(userId).lean();
+    expect(user!.planStatus).toBe("active");
+  });
+
+  it("does not set everPaid from a $0 trial invoice", async () => {
+    await send(
+      subscriptionPayload({
+        variant_id: 1001,
+        status: "on_trial",
+        trial_ends_at: "2026-08-06T00:00:00.000000Z",
+        updated_at: at(5),
+      }),
+    );
+    await send(invoicePayload({ total: 0, subtotal: 0, total_formatted: "$0.00" }));
+
+    const sub = await SubscriptionModel.findOne({}).lean();
+    expect(sub!.everPaid).toBe(false);
   });
 });

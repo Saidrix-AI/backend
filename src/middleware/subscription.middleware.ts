@@ -52,8 +52,24 @@ export async function requireActivePlan(
 
   // 402 rather than 403: the request is well-formed and the caller is who they
   // say they are — the only thing missing is payment. The client keys off this
-  // exact status to send them to the plans page (see lib/http.js).
+  // status, and off the code below, to pick which page to send them to (see
+  // lib/http.js).
   const status = effectiveStatus(user);
+
+  // A trial whose charge failed is held apart from an ordinary lapse: it has a
+  // plan and a subscription that has never worked, so "renew your subscription"
+  // is the wrong instruction. It belongs on /complete-payment.
+  if (status === "payment_required") {
+    next(
+      new ApiError(
+        402,
+        "Your payment did not go through. Complete it to get back into your account.",
+        "payment_required",
+      ),
+    );
+    return;
+  }
+
   next(
     new ApiError(
       402,

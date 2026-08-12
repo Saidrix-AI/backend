@@ -249,6 +249,10 @@ export async function checkout(req: Request, res: Response): Promise<void> {
   // A second checkout would create a second subscription and bill twice.
   // Existing subscribers change tier in the customer portal, where LemonSqueezy
   // handles the proration.
+  //
+  // This also covers `payment_required`, which is neither "lapsed" nor "none":
+  // an account whose trial charge failed must fix its card in the portal rather
+  // than mint a fresh checkout, or it would end up holding two subscriptions.
   const state = await subscriptions.getBillingState(req.user!.id);
   if (state.subscription && state.planStatus !== "lapsed" && state.planStatus !== "none") {
     res.status(409).json({
@@ -284,11 +288,31 @@ export async function checkout(req: Request, res: Response): Promise<void> {
 
   let created = false;
   try {
+    const user = await UserModel.findById(req.user!.id)
+      .select("name email trialConsumedAt")
+      .lean();
+    if (!user) throw new ApiError(404, "Account not found");
+
     const variantId = variantFor(plan, billing);
     if (!variantId) throw new ApiError(503, "That plan is not available for purchase right now.");
 
-    const user = await UserModel.findById(req.user!.id).select("name email").lean();
-    if (!user) throw new ApiError(404, "Account not found");
+    // Whether this buyer gets the free trial the Basic variants carry.
+    //
+    // Expressed as an ALLOWLIST — everything is skipped unless it earns the
+    // trial — because the failure directions are not symmetrical. Wrongly
+    // skipping costs a conversion; wrongly granting gives away a free period,
+    // repeatedly and to anyone who works it out. A trial added to another
+    // variant in the dashboard tomorrow therefore stays unsold until this line
+    // says otherwise.
+    //
+    // Two conditions earn it:
+    //   monthly only — a trial on yearly would attempt ~12x the charge on day
+    //                  two, which is a chargeback waiting to happen.
+    //   never trialled — `trialConsumedAt` is one-way, so nobody gets a second.
+    //                    This is the whole defence against trialling forever,
+    //                    and it reads stored state, never the request body.
+    const grantTrial =
+      plan === "basic" && billing === "monthly" && subscriptions.isTrialAvailableFor(user);
 
     const url = await ls.createCheckout({
       variantId,
@@ -296,6 +320,7 @@ export async function checkout(req: Request, res: Response): Promise<void> {
       email: user.email,
       name: user.name,
       redirectUrl: `${env.APP_URL.replace(/\/$/, "")}/account/plans?checkout=success`,
+      skipTrial: !grantTrial,
     });
 
     created = true;
@@ -318,6 +343,23 @@ export async function checkout(req: Request, res: Response): Promise<void> {
 }
 
 export async function subscription(req: Request, res: Response): Promise<void> {
+  const state = await subscriptions.getBillingState(req.user!.id);
+  const usage = await courseUsage(req.user!.id);
+  res.json({ success: true, data: { ...state, usage } });
+}
+
+/**
+ * Cancels the caller's own subscription.
+ *
+ * No subscription id is accepted from the request — `cancelForUser` resolves it
+ * from the session, so there is nothing to tamper with. The response carries the
+ * already-updated billing state, so the page can render "Cancelled — access
+ * until <date>" without waiting for `subscription_cancelled` to arrive.
+ */
+export async function cancel(req: Request, res: Response): Promise<void> {
+  if (!isBillingEnabled()) throw new ApiError(503, "Billing is not configured on this server.");
+
+  await subscriptions.cancelForUser(req.user!.id);
   const state = await subscriptions.getBillingState(req.user!.id);
   const usage = await courseUsage(req.user!.id);
   res.json({ success: true, data: { ...state, usage } });
@@ -380,9 +422,52 @@ export async function portal(req: Request, res: Response): Promise<void> {
   }
 }
 
+/**
+ * How long to wait before asking LemonSqueezy for a history we already found
+ * empty. Long enough that a refresh loop cannot spend the store's rate limit,
+ * short enough that someone who has just paid is not left staring at nothing.
+ */
+const INVOICE_BACKFILL_COOLDOWN_MS = 10 * 60 * 1000;
+
+/**
+ * Repairs an empty billing history, once, before it is read.
+ *
+ * An `Invoice` row is written by the `subscription_payment_*` webhooks or by
+ * `backfillInvoices` inside `reconcile` — and nothing else. That left a real
+ * hole: `reconcile` only runs when someone calls `POST /billing/sync`, which the
+ * UI does only on the post-checkout redirect, and `backfillInvoices` swallows
+ * its own errors by design. So a dropped webhook plus one failed backfill meant
+ * a paying customer whose /account/invoices was empty *permanently* — the page
+ * is a plain database read and nothing would ever try again.
+ *
+ * Only fires when there is genuinely nothing to show AND a subscription exists
+ * to fetch against, so the normal path costs no extra call.
+ */
+async function repairEmptyInvoiceHistory(userId: string): Promise<void> {
+  if (!isBillingEnabled()) return;
+
+  const sub = await SubscriptionModel.findOne({ userId })
+    .select("lemonSqueezyId invoicesSyncedAt")
+    .lean();
+  if (!sub?.lemonSqueezyId) return;
+
+  const syncedAt = sub.invoicesSyncedAt?.getTime() ?? 0;
+  if (Date.now() - syncedAt < INVOICE_BACKFILL_COOLDOWN_MS) return;
+
+  // Stamped before the call, not after: a failure must start the cooldown too,
+  // or a store that is down turns every page load into another doomed request.
+  await SubscriptionModel.updateOne({ _id: sub._id }, { $set: { invoicesSyncedAt: new Date() } });
+  await subscriptions.backfillInvoices(sub.lemonSqueezyId, userId);
+}
+
 export async function invoices(req: Request, res: Response): Promise<void> {
   const limit = Math.min(Number(req.query.limit) || 25, 100);
-  const rows = await InvoiceModel.find({ userId: req.user!.id })
+  const userId = req.user!.id;
+
+  const existing = await InvoiceModel.countDocuments({ userId });
+  if (existing === 0) await repairEmptyInvoiceHistory(userId);
+
+  const rows = await InvoiceModel.find({ userId })
     .sort({ createdAtLS: -1 })
     .limit(limit)
     .lean();

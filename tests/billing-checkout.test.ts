@@ -19,6 +19,9 @@ process.env.LS_VARIANT_PRO_MONTHLY = "2001";
 process.env.LS_VARIANT_PRO_YEARLY = "2002";
 process.env.LS_VARIANT_PREMIUM_MONTHLY = "3001";
 process.env.LS_VARIANT_PREMIUM_YEARLY = "3002";
+// The second Basic-monthly variant, the one carrying the 1-day free trial.
+// The Basic variants carry a 1-day trial in the dashboard; this declares it.
+process.env.TRIAL_DAYS = "1";
 
 // The real client would bill a real card. Counting the calls is the whole point
 // of this suite: one call is one chargeable checkout.
@@ -69,11 +72,39 @@ beforeEach(async () => {
   accessToken = reg.body.data.accessToken;
 });
 
-function checkout() {
+function checkout(plan = "pro", billing = "monthly") {
   return request(app)
     .post("/api/billing/checkout")
     .set("Authorization", `Bearer ${accessToken}`)
-    .send({ plan: "pro", billing: "monthly" });
+    .send({ plan, billing });
+}
+
+/** What the server actually asked LemonSqueezy for. */
+function sold(call = 0): { variantId: string; skipTrial?: boolean } {
+  // The mock is declared with no parameters, so vitest types its recorded calls
+  // as an empty tuple. The real client takes CreateCheckoutInput.
+  const args = createCheckout.mock.calls[call] as unknown as [
+    { variantId: string; skipTrial?: boolean },
+  ];
+  return args[0];
+}
+
+/** The variant id sold. */
+function soldVariant(call = 0): string {
+  return sold(call).variantId;
+}
+
+/** Whether the free trial was withheld on that checkout. */
+function skippedTrial(call = 0): boolean {
+  return sold(call).skipTrial === true;
+}
+
+/** Clears the reservation a previous checkout deliberately left standing. */
+async function releaseCheckoutLock() {
+  await UserModel.updateOne(
+    { email: "checkout@example.com" },
+    { $set: { checkoutLockedUntil: null } },
+  );
 }
 
 describe("billing: checkout", () => {
@@ -245,5 +276,94 @@ describe("billing: checkout", () => {
     expect(res.status).toBe(409);
     expect(res.body.code).toBe("subscription_exists");
     expect(createCheckout).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Who actually gets the free trial.
+ *
+ * The Basic variants carry a 1-day trial in the LemonSqueezy dashboard, so it
+ * would be handed to every Basic buyer on every purchase unless the checkout
+ * says otherwise. `checkout_options.skip_trial` is that "otherwise", and these
+ * tests are about when the server sets it.
+ *
+ * The decision is made purely from stored state — the request body carries
+ * {plan, billing} and nothing that could ask for a trial.
+ */
+describe("billing: who gets the free trial", () => {
+  it("grants it to a first-time Basic monthly buyer", async () => {
+    const res = await checkout("basic", "monthly");
+    expect(res.status).toBe(200);
+    expect(soldVariant()).toBe("1001");
+    expect(skippedTrial()).toBe(false);
+  });
+
+  it("REFUSES a second trial once one has been consumed", async () => {
+    // The abuse this exists to stop: take the trial, cancel it, come back. A
+    // cancelled trial leaves planStatus in lapsed/none, which the
+    // subscription-exists check happily allows a fresh checkout from — so
+    // without skip_trial the same account could trial indefinitely, free.
+    await UserModel.updateOne(
+      { email: "checkout@example.com" },
+      { $set: { trialConsumedAt: new Date() } },
+    );
+
+    const res = await checkout("basic", "monthly");
+    expect(res.status).toBe(200);
+    // Same variant as above — only the trial is withheld.
+    expect(soldVariant()).toBe("1001");
+    expect(skippedTrial()).toBe(true);
+  });
+
+  it("never trials the yearly variant", async () => {
+    // Basic yearly carries the same trial in the dashboard, and a trial there
+    // would attempt roughly twelve times the charge on day two.
+    const res = await checkout("basic", "yearly");
+    expect(res.status).toBe(200);
+    expect(soldVariant()).toBe("1002");
+    expect(skippedTrial()).toBe(true);
+  });
+
+  it("never trials the other tiers", async () => {
+    // They carry no trial today. Asserted anyway: this is an allowlist, so a
+    // trial switched on for Pro in the dashboard tomorrow stays unsold rather
+    // than being given away silently.
+    for (const [plan, variant] of [
+      ["pro", "2001"],
+      ["premium", "3001"],
+    ] as const) {
+      createCheckout.mockClear();
+      await releaseCheckoutLock();
+      const res = await checkout(plan, "monthly");
+      expect(res.status).toBe(200);
+      expect(soldVariant()).toBe(variant);
+      expect(skippedTrial(), `${plan} must not be trialled`).toBe(true);
+    }
+  });
+
+  it("withholds the trial entirely when TRIAL_DAYS is zero", async () => {
+    const { env } = await import("../src/config/env.js");
+    const before = env.TRIAL_DAYS;
+    (env as { TRIAL_DAYS: number }).TRIAL_DAYS = 0;
+    try {
+      const res = await checkout("basic", "monthly");
+      expect(res.status).toBe(200);
+      expect(skippedTrial()).toBe(true);
+    } finally {
+      (env as { TRIAL_DAYS: number }).TRIAL_DAYS = before;
+    }
+  });
+
+  it("still sells every tier with the extra variant configured", async () => {
+    // hasAllVariants() used to compare PLAN_BY_VARIANT.size against an expected
+    // 6. The trial variant makes it 7, which would have turned this route into
+    // a blanket 503 — refusing paid purchases, not just trials.
+    const first = await checkout("pro", "monthly");
+    expect(first.status).toBe(200);
+    await releaseCheckoutLock();
+
+    const second = await checkout("premium", "yearly");
+    expect(second.status).toBe(200);
+    expect(soldVariant(1)).toBe("3002");
   });
 });

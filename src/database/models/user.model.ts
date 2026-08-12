@@ -92,19 +92,51 @@ const userSchema = new Schema(
     planSince: { type: Date, default: null },
     /**
      * Whether the plan currently opens the app.
-     *   none   — never subscribed, or the subscription is gone
-     *   active — paying (or on trial, or inside payment retries)
-     *   grace  — cancelled but still inside the period they paid for
-     *   lapsed — expired, unpaid or paused; the app is closed
+     *   none             — never subscribed, or the subscription is gone
+     *   active           — paying, on trial, or a PROVEN payer inside retries
+     *   grace            — cancelled but still inside the period they paid for
+     *   payment_required — never paid and the charge failed; see below
+     *   lapsed           — expired, unpaid or paused; the app is closed
+     *
+     * `payment_required` and `lapsed` both close the app, so to the paywall
+     * they are the same answer. They are kept apart because they lead to
+     * different pages: a failed trial holds a `plan` and a subscription that
+     * has never worked, so sending it to the billing page to "renew" would be
+     * nonsense. It belongs on /complete-payment.
      */
     planStatus: {
       type: String,
-      enum: ["none", "active", "grace", "lapsed"],
+      enum: ["none", "active", "grace", "payment_required", "lapsed"],
       default: "none",
     },
     /** When `grace` runs out. Checked directly, so a missed expiry webhook
      *  cannot leave a cancelled account open indefinitely. */
     planExpiresAt: { type: Date, default: null },
+    /**
+     * When the free trial ends, while one is running. Null otherwise.
+     *
+     * Mirrored here for the same reason as the fields above: the session
+     * payload carries it so the countdown banner paints on first render, and
+     * reading it off the user row the request already loaded beats a second
+     * query on every login. `Subscription.trialEndsAt` remains the truth.
+     */
+    trialEndsAt: { type: Date, default: null },
+    /**
+     * When this account started a free trial, or null if it never has.
+     *
+     * One-way and never cleared: it is the whole defence against taking the
+     * 1-day trial over and over. Cancelling a trial leaves `planStatus` in
+     * `lapsed`/`none`, which billing.controller.ts#checkout happily allows a
+     * fresh checkout from — so without this the same account could trial
+     * forever, free.
+     *
+     * Written by exactly one function, the same one that owns the plan mirror
+     * above: services/subscription.service.ts#applySubscriptionState, reached
+     * only from a signature-verified webhook or a direct read of the
+     * LemonSqueezy API. Nothing a browser sends may touch it.
+     */
+    trialConsumedAt: { type: Date, default: null },
+
     /**
      * A short-lived reservation held while a checkout URL is being requested.
      * Two concurrent `POST /billing/checkout` calls (double-click, two tabs)
