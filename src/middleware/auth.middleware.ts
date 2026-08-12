@@ -46,6 +46,38 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
 }
 
 /**
+ * Attaches `req.user` when a valid login token is present, and does nothing at
+ * all when one is not.
+ *
+ * For routes that are genuinely open but behave better when they know who is
+ * calling — the contact form is the case it was written for: the landing page
+ * posts to it with no session, while a signed-in sender should be identified
+ * from their token rather than from form fields they could type anything into.
+ *
+ * Never rejects. A bad or expired token is treated exactly like no token, so a
+ * stale session cannot lock someone out of a public route. That is only safe
+ * because nothing behind this middleware is authorised by `req.user` — it is
+ * used to enrich, not to permit. Anything that gates on identity must use
+ * `requireAuth`.
+ */
+export function optionalAuth(req: Request, _res: Response, next: NextFunction): void {
+  const token = bearer(req);
+  if (!token) {
+    next();
+    return;
+  }
+
+  try {
+    const payload = verifyAccessToken(token);
+    req.user = { id: payload.sub, email: payload.email };
+    req.authKind = "user";
+  } catch {
+    // Deliberately ignored — see above.
+  }
+  next();
+}
+
+/**
  * Accepts a login token OR a voice-agent service token.
  *
  * The voice agent runs as a separate process and has to read the lecture it is

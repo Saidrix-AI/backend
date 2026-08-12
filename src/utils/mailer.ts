@@ -37,23 +37,37 @@ export interface MailInput {
   subject: string;
   text: string;
   html?: string;
+  /**
+   * Where a reply should go, when that is not the sender.
+   *
+   * The contact forms need this: the mail is sent BY us to our own inbox, but
+   * answering it has to reach the visitor. Their address belongs here and never
+   * in `from` — `from` stays `MAIL_FROM`, which is the domain we are authorised
+   * to send as.
+   *
+   * Prefer the `{ name, address }` form for anything built from user input.
+   * Nodemailer then does the quoting and encoding, so a display name cannot
+   * change how the header parses — which hand-concatenating `Name <addr>`
+   * quietly relies on the name being well-behaved.
+   */
+  replyTo?: string | { name: string; address: string };
 }
 
 /**
  * Sends an email via SMTP if configured; otherwise logs it (dev fallback) so
  * OTPs and reset links are still visible during local development.
  */
-export async function sendMail({ to, subject, text, html }: MailInput): Promise<void> {
+export async function sendMail({ to, subject, text, html, replyTo }: MailInput): Promise<void> {
   const tx = getTransporter();
   if (!tx) {
     logger.info(
-      { to, subject, text },
+      { to, subject, text, replyTo },
       "[mailer:dev] no SMTP transport (unconfigured, or NODE_ENV=test) — email logged, not sent",
     );
     return;
   }
 
-  await tx.sendMail({ from: env.MAIL_FROM, to, subject, text, html });
+  await tx.sendMail({ from: env.MAIL_FROM, to, subject, text, html, replyTo });
   logger.info({ to, subject }, "Email sent");
 }
 

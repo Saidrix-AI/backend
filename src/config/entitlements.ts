@@ -128,7 +128,38 @@ export function variantFor(plan: PlanId, billing: BillingPeriod): string | null 
   return typeof id === "string" && id.trim() ? id.trim() : null;
 }
 
-/** True once all six variant ids are configured. */
+/**
+ * True once all six variant ids are configured.
+ *
+ * Checks the six explicitly rather than counting `PLAN_BY_VARIANT`. A count is
+ * only ever right while the map holds exactly the six, and it silently becomes
+ * a blanket 503 on `checkout` — refusing paid purchases, not just misconfigured
+ * ones — the moment anything else is registered.
+ */
 export function hasAllVariants(): boolean {
-  return PLAN_BY_VARIANT.size === PLAN_IDS.length * BILLING_PERIODS.length;
+  return PLAN_IDS.every((plan) =>
+    BILLING_PERIODS.every((billing) => variantFor(plan, billing) !== null),
+  );
+}
+
+/**
+ * Whether this deployment offers a free trial at all.
+ *
+ * The trial itself is configured in the LemonSqueezy dashboard, as a property
+ * of the Basic variants — there is no separate trial product. Nothing in the
+ * API tells us that at request time, so `TRIAL_DAYS` is our declaration of it:
+ * it drives what the public pages advertise, and whether checkout asks
+ * LemonSqueezy to honour the trial or skip it.
+ *
+ * **It must match the dashboard.** Setting it above zero while no variant
+ * carries a trial would advertise something the checkout then charges for
+ * immediately, which is the one mistake this whole area exists to prevent.
+ */
+export function isTrialConfigured(): boolean {
+  return env.TRIAL_DAYS > 0;
+}
+
+/** How many days the trial runs. Zero when there is no trial. */
+export function trialDays(): number {
+  return env.TRIAL_DAYS;
 }

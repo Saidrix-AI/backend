@@ -147,6 +147,19 @@ export interface CreateCheckoutInput {
   redirectUrl: string;
   /** Minutes until the generated URL stops working. */
   expiresInMinutes?: number;
+  /**
+   * Sell this variant WITHOUT its free trial, charging immediately.
+   *
+   * The Basic variants carry a 1-day trial in the dashboard, which would
+   * otherwise be handed to everyone who buys them, every time. This is how a
+   * second trial is refused to someone who has already had one.
+   *
+   * Required, deliberately: granting a free period is not something any caller
+   * should be able to do by forgetting a field. It also defaults to `true` at
+   * runtime, so a caller the compiler cannot see withholds the trial rather
+   * than giving one away.
+   */
+  skipTrial: boolean;
 }
 
 /**
@@ -176,6 +189,18 @@ export async function createCheckout(input: CreateCheckoutInput): Promise<string
         product_options: {
           redirect_url: input.redirectUrl,
           receipt_button_text: "Go to Saidrix",
+        },
+        // Sent on every checkout rather than only when skipping, so the
+        // decision is always explicit in the request. `false` is LemonSqueezy's
+        // own default and simply honours whatever the variant is configured
+        // with.
+        //
+        // Anything other than an explicit `false` skips the trial. The two
+        // mistakes are not equally bad — withholding a trial costs a
+        // conversion, granting one by accident gives away a free period to
+        // everyone who finds it — so the ambiguous case takes the cheap one.
+        checkout_options: {
+          skip_trial: input.skipTrial !== false,
         },
         expires_at: expiresAt,
       },
@@ -240,6 +265,24 @@ export async function listSubscriptionInvoices(subscriptionId: string): Promise<
     method: "GET",
   });
   return json.data ?? [];
+}
+
+/**
+ * Cancels a subscription.
+ *
+ * `DELETE` is LemonSqueezy's verb for this, but nothing is deleted: the response
+ * is the same subscription in `cancelled` state with `ends_at` set to the end of
+ * the period already paid for. That response is what lets the caller update our
+ * mirror in the same request instead of waiting on a webhook.
+ *
+ * The customer keeps their access until `ends_at` — see `accessFor`, which maps
+ * a cancelled subscription to `grace` until that date passes.
+ */
+export async function cancelSubscription(subscriptionId: string): Promise<LsSubscription> {
+  const json = await call<{ data: LsSubscription }>(`/subscriptions/${subscriptionId}`, {
+    method: "DELETE",
+  });
+  return json.data;
 }
 
 /**

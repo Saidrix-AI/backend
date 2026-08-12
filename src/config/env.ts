@@ -38,6 +38,11 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
   MAIL_FROM: z.string().default("Saidrix AI Tutor <no-reply@saidrix.com>"),
+  // Where the contact forms deliver. Fixed here on purpose and NEVER taken from
+  // a request: a recipient supplied by the caller would turn the public contact
+  // endpoint into an open relay sending from our own domain, which would cost
+  // the sending reputation that signup and password-reset mail depends on.
+  CONTACT_INBOX: z.string().email().default("sifuddin.soad@saidrix.com"),
 
   // --- Billing (LemonSqueezy) ---
   // LemonSqueezy is the merchant of record: it owns cards, VAT and invoices, so
@@ -63,6 +68,15 @@ const envSchema = z.object({
   LS_VARIANT_PRO_YEARLY: z.preprocess((v) => v || undefined, z.string().optional()),
   LS_VARIANT_PREMIUM_MONTHLY: z.preprocess((v) => v || undefined, z.string().optional()),
   LS_VARIANT_PREMIUM_YEARLY: z.preprocess((v) => v || undefined, z.string().optional()),
+  // How many days the free trial runs, or 0 for no trial. MUST match what the
+  // Basic variants are configured with in the LemonSqueezy dashboard — the API
+  // does not tell us at request time, so this is our declaration of it.
+  //
+  // It drives two things: what the public pages advertise, and whether a
+  // checkout asks LemonSqueezy to honour the trial or skip it (see
+  // controller/billing.controller.ts#checkout). Above zero with no trial
+  // actually configured would advertise a free day and then charge for it.
+  TRIAL_DAYS: z.coerce.number().int().min(0).max(90).default(0),
   // Where a finished checkout sends the buyer back to. Browser origin, not the API.
   APP_URL: z.string().default("http://localhost:5173"),
 

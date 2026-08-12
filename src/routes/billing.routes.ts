@@ -53,6 +53,11 @@ billingRouter.post(
   billingController.checkout,
 );
 billingRouter.get("/subscription", billingController.subscription);
+// Cancelling is not a checkout, but it is the other route that spends a
+// LemonSqueezy call on a user's behalf and changes real billing state, so it
+// gets the same per-IP ceiling. No CSRF middleware: like /checkout it needs a
+// Bearer token, which a cross-origin page cannot obtain — see csrf.middleware.ts.
+billingRouter.post("/cancel", checkoutLimiter, billingController.cancel);
 billingRouter.post("/sync", syncLimiter, billingController.sync);
 billingRouter.get("/portal", billingController.portal);
 billingRouter.get("/invoices", billingController.invoices);

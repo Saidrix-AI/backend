@@ -17,6 +17,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 process.env.LEMONSQUEEZY_API_KEY = "test-api-key";
 process.env.LEMONSQUEEZY_STORE_ID = "1";
 process.env.LEMONSQUEEZY_WEBHOOK_SECRET = "test-signing-secret";
+// Pinned, not inherited. Without this the trial assertions below read whatever
+// TRIAL_DAYS the developer happens to have in their own .env, so "offers
+// nothing when no trial is configured" passed or failed depending on the
+// machine. The `withTrial` helper turns it on where a test needs it.
+process.env.TRIAL_DAYS = "0";
 
 const { app } = await import("../src/app.js");
 const { UserModel } = await import("../src/database/models/user.model.js");
@@ -125,6 +130,51 @@ describe("a cancelled subscription inside its grace period", () => {
   });
 });
 
+/**
+ * A free trial whose charge failed.
+ *
+ * The rule is stricter than an ordinary lapse: nothing opens until the payment
+ * clears. The API has to be the one enforcing that, because the client guard is
+ * only a routing hint — but the way back in (auth, profile, billing) must stay
+ * reachable, or the student is locked out of fixing it too.
+ */
+describe("with a failed trial payment", () => {
+  for (const path of GATED) {
+    it(`locks ${path}`, async () => {
+      await setPlanState("payment_required", { plan: "basic" });
+      const res = await request(app).get(path).set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(402);
+      // A distinct code: the client sends this state to /complete-payment
+      // rather than to the billing page, which would tell them to "renew" a
+      // subscription that has never worked.
+      expect(res.body.code).toBe("payment_required");
+    });
+  }
+
+  for (const path of OPEN) {
+    it(`leaves ${path} reachable`, async () => {
+      await setPlanState("payment_required", { plan: "basic" });
+      const res = await request(app).get(path).set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(200);
+    });
+  }
+
+  it("says what is actually wrong", async () => {
+    await setPlanState("payment_required", { plan: "basic" });
+    const res = await request(app).get("/api/courses").set("Authorization", `Bearer ${token}`);
+    expect(res.body.message).toContain("payment did not go through");
+  });
+
+  it("is reported verbatim on the session payload, not flattened to lapsed", async () => {
+    // effectiveStatus() collapses anything that has run out into "lapsed".
+    // payment_required must survive that, or the client cannot tell the two
+    // apart and the whole reason for the separate status disappears.
+    await setPlanState("payment_required", { plan: "basic" });
+    const res = await request(app).get("/api/auth/me").set("Authorization", `Bearer ${token}`);
+    expect(res.body.data.user.planStatus).toBe("payment_required");
+  });
+});
+
 describe("the session payload", () => {
   it("carries the plan state the client routes on", async () => {
     await setPlanState("active", { plan: "premium" });
@@ -175,5 +225,62 @@ describe("the plan is not settable from the browser", () => {
 
     const user = await UserModel.findById(userId).lean();
     expect(user!.plan).toBeNull();
+  });
+});
+
+/**
+ * What the session payload says about a free trial.
+ *
+ * Both fields are display hints with no authority — the server picks the
+ * checkout variant from stored state regardless of what the client believes —
+ * but they have to be right, because one of them is the sentence that warns a
+ * student their card is about to be charged.
+ */
+describe("trial fields on the session payload", () => {
+  async function me() {
+    const res = await request(app).get("/api/auth/me").set("Authorization", `Bearer ${token}`);
+    return res.body.data.user;
+  }
+
+  /** Declares a trial for the duration of `run`, then puts TRIAL_DAYS back. */
+  async function withTrial(run: () => Promise<void>) {
+    const { env } = await import("../src/config/env.js");
+    const box = env as { TRIAL_DAYS: number };
+    const before = box.TRIAL_DAYS;
+    box.TRIAL_DAYS = 1;
+    try {
+      await run();
+    } finally {
+      box.TRIAL_DAYS = before;
+    }
+  }
+
+  it("offers a trial to an account that has never had one", async () => {
+    await withTrial(async () => {
+      expect((await me()).trialEligible).toBe(true);
+    });
+  });
+
+  it("refuses a second trial, forever", async () => {
+    await withTrial(async () => {
+      await UserModel.updateOne({ _id: userId }, { $set: { trialConsumedAt: new Date() } });
+      expect((await me()).trialEligible).toBe(false);
+    });
+  });
+
+  it("offers nothing when no trial is configured", async () => {
+    // Most deployments, including every local one. Advertising a trial that
+    // cannot be sold would be worse than not advertising it.
+    expect((await me()).trialEligible).toBe(false);
+  });
+
+  it("carries the trial end date for the countdown banner", async () => {
+    const endsAt = new Date(Date.now() + 3_600_000);
+    await UserModel.updateOne({ _id: userId }, { $set: { trialEndsAt: endsAt } });
+    expect((await me()).trialEndsAt).toBe(endsAt.toISOString());
+  });
+
+  it("carries null when no trial is running", async () => {
+    expect((await me()).trialEndsAt).toBeNull();
   });
 });

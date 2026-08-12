@@ -3,7 +3,7 @@ import { Types, type HydratedDocument } from "mongoose";
 import type { PlanId } from "../config/plans.js";
 import { UserModel, type User } from "../database/models/user.model.js";
 import { ApiError } from "../utils/apiError.js";
-import { sessionStatus, type PlanStatus } from "./subscription.service.js";
+import { isTrialAvailableFor, sessionStatus, type PlanStatus } from "./subscription.service.js";
 import { issueRefreshToken, signAccessToken } from "./token.service.js";
 
 const BCRYPT_ROUNDS = 12;
@@ -84,6 +84,14 @@ export interface PublicUser {
    */
   plan: PlanId | null;
   planStatus: PlanStatus;
+  /**
+   * When the running free trial ends, or null. Drives the countdown banner —
+   * the student handed over a card and will be charged, so saying so plainly
+   * is an obligation, not a nicety.
+   */
+  trialEndsAt: string | null;
+  /** Whether to offer a trial on the plan cards. The server re-decides at checkout. */
+  trialEligible: boolean;
 }
 
 export interface AuthTokens {
@@ -104,6 +112,8 @@ function toPublicUser(user: HydratedDocument<User>): PublicUser {
     // grace period that ran out reads as lapsed even before the expiry webhook
     // lands, and a deployment with billing switched off reads as open.
     planStatus: sessionStatus(user),
+    trialEndsAt: user.trialEndsAt?.toISOString() ?? null,
+    trialEligible: isTrialAvailableFor(user),
   };
 }
 

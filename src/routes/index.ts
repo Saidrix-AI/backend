@@ -4,6 +4,8 @@ import { intakeRouter } from "./intake.routes.js";
 import { authRouter } from "./auth.routes.js";
 import { billingRouter } from "./billing.routes.js";
 import { chatRouter } from "./chat.routes.js";
+import { configRouter } from "./config.routes.js";
+import { contactRouter } from "./contact.routes.js";
 import { routineRouter } from "./routine.routes.js";
 import { userRouter } from "./user.routes.js";
 import { progressRouter, voiceAgentProgressRouter } from "./progress.routes.js";
@@ -15,6 +17,16 @@ import { requireAuth, requireAuthOrVoiceAgent } from "../middleware/auth.middlew
 import { requireActivePlan } from "../middleware/subscription.middleware.js";
 
 export const apiRouter = Router();
+
+// --- Open to everyone, signed in or not ----------------------------------
+// The landing page renders before anyone has an account, and it advertises the
+// free trial. This is where it learns whether this deployment actually has one
+// to sell. Nothing account-specific is served here.
+apiRouter.use("/config", configRouter);
+// The contact forms. The landing page's has no session, so this cannot require
+// one — it identifies a signed-in sender when it can and treats the form fields
+// as untrusted either way. See contact.routes.ts.
+apiRouter.use("/contact", contactRouter);
 
 // --- Open to any authenticated account, plan or no plan -------------------
 // Signing in, reading your own profile, and paying must all keep working after
