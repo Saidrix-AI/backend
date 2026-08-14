@@ -21,7 +21,7 @@
     "svg:e2e": "tsx scripts/svg-e2e.ts",
     "icons:backfill": "tsx scripts/backfill-icons.ts",
     "migrate:active-paths": "node dist/scripts/migrate-active-paths.js",
-    "migrate:drop-banglish": "tsx scripts/migrate-drop-banglish.ts",
+    "migrate:drop-banglish": "node scripts/migrate-drop-banglish.mjs",
     "migrate:ever-paid": "node scripts/backfill-ever-paid.mjs"
   },
   "dependencies": {

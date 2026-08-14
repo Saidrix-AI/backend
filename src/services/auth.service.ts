@@ -206,7 +206,13 @@ export async function login(
   if (user.failedLoginAttempts > 0 || user.lockedUntil) {
     user.failedLoginAttempts = 0;
     user.lockedUntil = undefined;
-    await user.save();
+    // `validateModifiedOnly` because this save exists only to clear the two
+    // fields above. A plain save() validates the WHOLE document, so any field
+    // holding a value that a later schema change made invalid — a stored
+    // enum member since removed, say — would lock the user out of logging in
+    // entirely. Clearing a lock counter must never be able to fail on data it
+    // does not touch.
+    await user.save({ validateModifiedOnly: true });
   }
 
   return issueTokens(user, meta);
