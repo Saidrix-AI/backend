@@ -221,6 +221,36 @@ const envSchema = z.object({
   // related queries; "latest" does not change within a single generation.
   AGENT_FRESHNESS_CACHE_MINUTES: z.coerce.number().int().min(0).default(60),
 
+  // --- Remote code runner (Judge0) ---
+  //
+  // The classroom runs Python and JavaScript in the student's own browser, for
+  // free and with no round trip. This covers everything else — the ~30 other
+  // languages in the curriculum that a browser cannot host: C, C++, Java, Go,
+  // Rust, Ruby, PHP, Kotlin and the rest.
+  //
+  // Deliberately proxied through this backend rather than called from the
+  // browser: the key would otherwise be in the page source, and the per-user
+  // rate limit has to live somewhere the student cannot edit.
+  //
+  // Unset = the remote lane is simply off, and the tutor is told it may only
+  // demonstrate Python and JavaScript. That is a real, supported configuration:
+  // the browser lane needs nothing.
+  JUDGE0_URL: z.preprocess((v) => v || undefined, z.string().url().optional()),
+  JUDGE0_API_KEY: z.preprocess((v) => v || undefined, z.string().optional()),
+  // RapidAPI sends the key as x-rapidapi-key plus an x-rapidapi-host header. A
+  // self-hosted Judge0 wants neither — leave both blank there.
+  JUDGE0_API_HOST: z.preprocess((v) => v || undefined, z.string().optional()),
+  // Seconds of CPU a submission may burn. Teaching demos finish in well under
+  // one; this is the ceiling that stops an accidental infinite loop from
+  // occupying a worker.
+  JUDGE0_CPU_LIMIT_S: z.coerce.number().min(1).max(15).default(5),
+  // Wall-clock seconds, which also covers compilation — a cold C++ or Java
+  // compile is most of the time a student waits.
+  JUDGE0_WALL_LIMIT_S: z.coerce.number().min(2).max(30).default(15),
+  JUDGE0_MEMORY_LIMIT_KB: z.coerce.number().int().min(16000).max(512000).default(128000),
+  // How long the backend itself waits before giving up on the whole exchange.
+  JUDGE0_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+
   // --- RAG knowledge base (Course-Content curriculum) ---
   // Pinecone vector DB. Without PINECONE_API_KEY the whole RAG layer is off:
   // the search_course_content tool is not registered and agent grounding is
@@ -364,6 +394,18 @@ export const ragConfig = {
   embeddingDimensions: env.EMBEDDING_DIMENSIONS,
   topK: env.RAG_TOP_K,
 } as const;
+
+/**
+ * Whether the remote code runner is configured.
+ *
+ * A URL is the whole requirement: a self-hosted Judge0 needs no key, and a
+ * hosted one supplies it separately. False is a supported state, not a
+ * misconfiguration — the classroom keeps its browser lane and the voice agent
+ * is told it may only demonstrate Python and JavaScript.
+ */
+export function isCodeRunnerEnabled(): boolean {
+  return Boolean(env.JUDGE0_URL);
+}
 
 /**
  * RAG is usable only when Pinecone auth, an embedding model + its dimensions,

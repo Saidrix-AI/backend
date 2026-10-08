@@ -12,6 +12,7 @@ import { progressRouter, voiceAgentProgressRouter } from "./progress.routes.js";
 import { courseRouter } from "./course.routes.js";
 import { projectRouter } from "./project.routes.js";
 import { lectureRouter, voiceAgentLectureRouter } from "./lecture.routes.js";
+import { runnerRouter } from "./runner.routes.js";
 import { voiceRouter } from "./voice.routes.js";
 import { requireAuth, requireAuthOrVoiceAgent } from "../middleware/auth.middleware.js";
 import { requireActivePlan } from "../middleware/subscription.middleware.js";
@@ -63,5 +64,8 @@ apiRouter.use("/courses", paid, courseRouter);
 apiRouter.use("/projects", paid, projectRouter);
 apiRouter.use("/lectures", paid, lectureRouter);
 apiRouter.use("/voice", paid, voiceRouter);
+// Compiles and runs the classroom's non-browser languages. Behind the paywall
+// like everything else it serves, and rate-limited per user inside the router.
+apiRouter.use("/run", paid, runnerRouter);
 apiRouter.use("/assessments", paid, assessmentRouter);
 apiRouter.use("/intake", paid, intakeRouter);
