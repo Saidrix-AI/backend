@@ -133,7 +133,7 @@ export async function makeLecture(
               ctx,
               plan.title,
               kept.map((k) => k.outline),
-              kept.flatMap((k) => k.sections.map((s) => ({ title: s.title, goal: s.tutor.goal }))),
+              kept.flatMap((k) => k.sections.map((s) => ({ title: s.title, goal: s.tutor?.goal ?? s.title }))),
               blueprint.bp,
               deps?.worker,
             );

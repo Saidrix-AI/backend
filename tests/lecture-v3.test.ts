@@ -163,4 +163,25 @@ describe("lecture projection", () => {
     expect(JSON.stringify(json)).not.toContain("correctIndex");
     expect(findQuiz(doc)?.[0]?.correctIndex).toBe(1);
   });
+
+  it("teaches a content-only section too: the live tutor plans it, the quiz is still not a beat", () => {
+    const contentOnly: StoredSection[] = [
+      { id: "s1", topicId: 1, title: "What a loop is", kind: "theory", blocks: [{ id: "b1", type: "paragraph", text: "A loop repeats." }] },
+      { id: "s2", topicId: 1, title: "Running a loop", kind: "practical", blocks: [{ id: "b2", type: "code", code: "for i in range(3): print(i)" }] },
+      sections[1]!,
+    ];
+    const json = toLectureJson({ ...doc, sections: contentOnly }, "tutor");
+    const beats = json.beats as unknown as { id: string; objective: string; demo: unknown; teach: { plain: { points: string[] } } }[];
+    expect(beats.map((b) => b.id)).toEqual(["s1", "s2"]);
+    expect(beats[0]!.objective).toBe("What a loop is");
+    expect(beats[0]!.teach.plain.points).toEqual([]);
+    expect(beats[1]!.demo).toEqual({ kind: "code", blockId: "b2" });
+  });
+
+  it("accepts a writer's sections without tutor notes", () => {
+    const parsed = sectionEmissionSchema.safeParse({
+      sections: [{ title: "Loops", kind: "theory", blocks: [{ type: "paragraph", text: "A loop repeats work." }] }],
+    });
+    expect(parsed.success).toBe(true);
+  });
 });
