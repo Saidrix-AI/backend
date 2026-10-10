@@ -409,17 +409,21 @@ describe("multi-course learning path coordination", () => {
   const pathCourses = [
     { title: "Python Basics", objective: "Python from zero", covers: "syntax, variables, control flow, functions" },
     { title: "Pandas for Analysis", objective: "Analyze data with Pandas", covers: "DataFrames, filtering, groupby, plotting" },
+    // A multi-course path is a career path now (4-10 courses); anything
+    // narrower is one course.
+    { title: "SQL for Analysts", objective: "Query data with SQL", covers: "SELECT, joins, aggregation" },
+    { title: "Dashboards", objective: "Build dashboards", covers: "charts, BI tools, storytelling" },
   ];
 
   it("propose_courses saves an ordered path and returns its pathId", async () => {
     await LearningPathModel.deleteMany({});
-    const outcome = await run("propose_courses", { goal: "Become a Data Analyst", breadth: "subject", courses: pathCourses });
+    const outcome = await run("propose_courses", { goal: "Become a Data Analyst", breadth: "career", courses: pathCourses });
     expect(outcome.ok).toBe(true);
 
     const path = await LearningPathModel.findOne({ userId: userA }).lean();
     expect(path).not.toBeNull();
     expect(path!.goal).toBe("Become a Data Analyst");
-    expect(path!.courses.map((c) => c.title)).toEqual(["Python Basics", "Pandas for Analysis"]);
+    expect(path!.courses.map((c) => c.title)).toEqual(["Python Basics", "Pandas for Analysis", "SQL for Analysts", "Dashboards"]);
     expect(path!.courses[0]!.covers).toContain("syntax");
     // The pathId is handed back so generate_course can reference it.
     expect(outcome.modelText).toContain(String(path!._id));
@@ -427,7 +431,7 @@ describe("multi-course learning path coordination", () => {
 
   it("generate_course with pathId+order stamps the course and feeds sibling scope as prerequisites", async () => {
     await LearningPathModel.deleteMany({});
-    await run("propose_courses", { goal: "Become a Data Analyst", breadth: "subject", courses: pathCourses });
+    await run("propose_courses", { goal: "Become a Data Analyst", breadth: "career", courses: pathCourses });
     const path = await LearningPathModel.findOne({ userId: userA }).lean();
     const pathId = String(path!._id);
 
@@ -441,21 +445,21 @@ describe("multi-course learning path coordination", () => {
     const course = await CourseModel.findOne({ pathId: path!._id }).lean();
     expect(course).not.toBeNull();
     expect(course!.order).toBe(2);
-    expect(course!.pathTotal).toBe(2);
+    expect(course!.pathTotal).toBe(4);
     expect(course!.pathTitle).toBe("Become a Data Analyst");
 
     // The outline call received the authoritative objective + a boundary that
     // turns course 1 into a prerequisite (the mechanism that stops repetition).
     const brief = mockGenerate.mock.calls[0]![0];
     expect(brief.objective).toBe("Analyze data with Pandas");
-    expect(brief.pathBoundary).toContain("STEP 2 OF 2");
+    expect(brief.pathBoundary).toContain("STEP 2 OF 4");
     expect(brief.pathBoundary).toContain("PREREQUISITES");
     expect(brief.pathBoundary).toContain("syntax, variables, control flow, functions");
   });
 
   it("auto-links a course to a matching proposed path even when no pathId is passed", async () => {
     await LearningPathModel.deleteMany({});
-    await run("propose_courses", { goal: "Become a Data Analyst", breadth: "subject", courses: pathCourses });
+    await run("propose_courses", { goal: "Become a Data Analyst", breadth: "career", courses: pathCourses });
     const path = await LearningPathModel.findOne({ userId: userA }).lean();
 
     mockGenerate.mockImplementation(async () => ({ ...cannedPayload(), title: "Pandas for Analysis" }));
@@ -469,8 +473,8 @@ describe("multi-course learning path coordination", () => {
     const course = await CourseModel.findOne({ pathId: path!._id }).lean();
     expect(course).not.toBeNull();
     expect(course!.order).toBe(2); // 2nd entry in the path
-    expect(course!.pathTotal).toBe(2);
-    expect(mockGenerate.mock.calls[0]![0].pathBoundary).toContain("STEP 2 OF 2");
+    expect(course!.pathTotal).toBe(4);
+    expect(mockGenerate.mock.calls[0]![0].pathBoundary).toContain("STEP 2 OF 4");
   });
 
   it("without pathId and no matching path, a course is created unstamped", async () => {

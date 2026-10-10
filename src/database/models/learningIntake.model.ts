@@ -72,6 +72,12 @@ const learningIntakeSchema = new Schema(
      * generation that would word it differently.
      */
     plannedQuestions: { type: Schema.Types.Mixed, default: {} },
+    /**
+     * The Saidrix curriculum template this request matched ({sourcePath,
+     * courseIndex}), or null. Set with the plan; the proposal and the course
+     * outline read it so the whole flow follows the same template.
+     */
+    curriculum: { type: Schema.Types.Mixed, default: null },
 
     // --- The transcript ---
     /** Every question asked and what came back, in order. */

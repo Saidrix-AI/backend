@@ -20,6 +20,8 @@ export interface RetrieveOptions {
   topK?: number;
   level?: Exclude<Level, "overview">;
   category?: string;
+  /** Only chunks from this one source document (a curriculum template's PDF). */
+  sourcePath?: string;
 }
 
 function str(v: unknown): string {
@@ -41,6 +43,7 @@ export async function retrieveKnowledge(
     const filter: Record<string, unknown> = {};
     if (opts.level) filter.level = opts.level;
     if (opts.category) filter.category = opts.category;
+    if (opts.sourcePath) filter.sourcePath = opts.sourcePath;
 
     const matches = await queryVectors(
       vector,

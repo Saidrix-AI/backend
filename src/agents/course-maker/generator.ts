@@ -3,6 +3,7 @@ import { ApiError } from "../../utils/apiError.js";
 import { getModelName, hasOpenAICompatProvider } from "../llm.js";
 import { formatZodIssues, runForcedToolCall, type LlmDeps } from "../shared/forcedToolCall.js";
 import { retrieveGroundingDetailed } from "../../rag/retriever.js";
+import { deepResearch } from "../shared/deepResearch.js";
 import { retrieveFreshness } from "../shared/freshness.js";
 import { buildCourseMakerSystemPrompt, buildCourseMakerUserMessage } from "./prompt.js";
 import { emitCourseTool, generatedCourseSchema, type CourseBrief, type GeneratedCourse } from "./schema.js";
@@ -43,18 +44,27 @@ export async function generateCoursePayload(
   // Two independent lookups, so they run together: our curriculum (what to
   // teach and in what order) and the live web (what is current in this subject
   // today, which decides which chapters are still worth having at all).
+  //
+  // With a Saidrix template, the structure is the template's and the grounding
+  // is that PDF's own chunks; the web only updates details (versions, tools).
+  // Without one, a multi-query research brief replaces the single search, so
+  // the structure comes from current sources rather than the model's memory.
+  const template = brief.template;
   const [{ block: grounding, guides, count }, freshness] = await Promise.all([
-    retrieveGroundingDetailed(groundQuery, { topK: 8 }),
-    retrieveFreshness(brief.titleHint ?? brief.objective, {
-      intent: "current version roadmap what to learn deprecated",
-      label: "course-maker",
-    }),
+    retrieveGroundingDetailed(groundQuery, template ? { topK: 12, sourcePath: template.sourcePath } : { topK: 8 }),
+    template
+      ? retrieveFreshness(brief.titleHint ?? brief.objective, {
+          intent: "current version tools deprecated",
+          label: "course-maker",
+        })
+      : deepResearch(brief.titleHint ?? brief.objective, { label: "course-maker" }),
   ]);
   // eslint-disable-next-line no-console
   console.info(
-    count > 0
-      ? `[course-maker] outline grounded in knowledge base: ${count} chunks from ${guides.join(", ")}`
-      : `[course-maker] outline: no knowledge-base grounding (RAG off or no match) for "${groundQuery.slice(0, 60)}"`,
+    (template ? `[course-maker] outline follows template ${template.sourcePath} (${template.modules.length} modules); ` : "") +
+      (count > 0
+        ? `grounded in knowledge base: ${count} chunks from ${guides.join(", ")}`
+        : `no knowledge-base grounding (RAG off or no match) for "${groundQuery.slice(0, 60)}"`),
   );
   return runForcedToolCall<GeneratedCourse>({
     deps: resolved,

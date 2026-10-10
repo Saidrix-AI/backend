@@ -120,13 +120,13 @@ describe("propose_courses tool", () => {
     const before = await CourseModel.countDocuments({});
     const outcome = await run("propose_courses", {
       goal: "Become a Python Dev",
-      breadth: "subject",
-      courses: twoCourses,
+      breadth: "topic",
+      courses: twoCourses.slice(0, 1),
     });
     expect(outcome.ok).toBe(true);
     expect(outcome.changed).toBeUndefined();
-    expect(outcome.label).toBe("Proposed 2 courses");
-    expect(outcome.proposal).toHaveLength(2);
+    expect(outcome.label).toBe("Proposed 1 course");
+    expect(outcome.proposal).toHaveLength(1);
     expect(outcome.proposal![0]).toMatchObject({ title: "Python Foundations", level: "Beginner" });
     // The path is persisted (so generate_course can reference it), but NO course is created yet.
     expect(outcome.modelText).toMatch(/pathId=|generate_course/);
@@ -169,10 +169,10 @@ describe("propose_courses tool", () => {
     expect(tooMany.ok).toBe(false);
   });
 
-  it("keeps a subject to 2-3 courses", async () => {
-    const four = await run("propose_courses", { goal: "Data analysis", breadth: "subject", courses: many(4) });
-    expect(four.ok).toBe(false);
-    expect(four.modelText).toContain("2-3");
+  it("holds a subject to one course too — the 2-3 course middle size produced filler", async () => {
+    const two = await run("propose_courses", { goal: "Data analysis", breadth: "subject", courses: many(2) });
+    expect(two.ok).toBe(false);
+    expect(two.modelText).toContain("exactly ONE course");
   });
 
   it("rejects a course entry without an objective", async () => {

@@ -45,6 +45,8 @@ export interface ProbeContext {
   /** Everything the student has answered so far, in order. */
   answers: IntakeAnswer[];
   language: Language;
+  /** The matched curriculum template, so the questions test its real syllabus. */
+  curriculum?: string;
 }
 
 /** `ask: false` carries no questions; `ask: true` always carries at least one. */
@@ -129,6 +131,9 @@ function buildUserMessage(ctx: ProbeContext): string {
     `What the student asked for: ${ctx.objective}`,
     `Subject kind: ${ctx.topicKind}`,
     "",
+    ...(ctx.curriculum
+      ? [ctx.curriculum, "", "Any questions you write must test topics from these modules, not general trivia.", ""]
+      : []),
     "What they have told you so far:",
     transcript,
     "",

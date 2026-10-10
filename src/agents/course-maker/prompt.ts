@@ -13,7 +13,8 @@ You emit the course metadata and the CHAPTER LIST only. Each chapter's modules a
 
 Coverage rules:
 - Cover ONLY this subject's own ground — take the student to real working competence in THIS subject, but teach nothing outside it. Do NOT teach prerequisites or adjacent subjects: an HTML course does not teach CSS or JavaScript; a JavaScript course does not teach HTML or CSS; a Pandas course does not teach Python basics. Assume the student learns those separately (or already has).
-- Plan 6 to 9 chapters based on what THIS subject genuinely needs — fewer is completely fine; never pad with filler. The WHOLE course must total FEWER THAN 60 lessons, so each chapter holds only a handful of lessons — spend them on the topics that matter most and keep minor topics tight.
+- When a SAIDRIX CURRICULUM TEMPLATE is given, it IS the structure: one chapter per template module, in the template's order, titled after it. Do not add, drop, merge or reorder modules; the rule below on chapter count does not apply. Web results may update details (versions, tool names) but never the structure.
+- Otherwise, plan 6 to 9 chapters based on what THIS subject genuinely needs — fewer is completely fine; never pad with filler. The WHOLE course must total FEWER THAN 60 lessons, so each chapter holds only a handful of lessons — spend them on the topics that matter most and keep minor topics tight.
 - Order chapters foundational to advanced, each one depending only on what came before it.
 - NEVER plan a chapter about installing or setting up tools (installers, editors, terminals, virtual environments). If the student needs setup, that is ONE lesson, given in \`setupLesson\` — nothing more. Chapter 1 starts with the subject itself.
 - When a multi-course path boundary is given: treat the earlier courses' ground as prerequisites the student already holds — do NOT re-teach it; start at the first concept this course genuinely owns. Do NOT teach anything the later courses are set to cover. Stay strictly within this course's own slice.
@@ -126,6 +127,14 @@ export function buildCourseMakerUserMessage(
     );
   }
   lines.push(...profileLines(brief));
+  if (brief.template) {
+    lines.push(
+      "",
+      brief.template.block,
+      "",
+      `Write exactly ${brief.template.modules.length} chapters, one per module above, in that order.`,
+    );
+  }
   if (grounding) lines.push("", grounding);
   // Last, so the freshest material sits closest to the tool call.
   if (freshness) lines.push("", freshness);
