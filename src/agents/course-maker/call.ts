@@ -21,7 +21,7 @@ export type CourseRole = "expand" | "projects";
 
 export function resolveCourseDeps(role: CourseRole): LlmDeps {
   if (!hasOpenAICompatProvider()) {
-    throw new ApiError(503, "Course generation needs an OpenAI-compatible LLM provider (openai or openrouter).");
+    throw new ApiError(503, "Course generation needs an OpenAI-compatible LLM provider (vercel or openai).");
   }
   const override = role === "expand" ? env.COURSE_EXPAND_MODEL : env.PROJECT_PLANNER_MODEL;
   return { model: override ?? env.COURSE_MAKER_MODEL ?? getModelName() };

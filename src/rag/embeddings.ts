@@ -3,7 +3,7 @@ import { ragConfig } from "../config/env.js";
 
 /**
  * Embeddings via any OpenAI-compatible endpoint (base URL + key + model are all
- * env-driven — see ragConfig). Defaults to OpenRouter, but note OpenRouter may
+ * env-driven — see ragConfig). Defaults to the Vercel AI Gateway, which may
  * not serve an /embeddings route for every model; if a request comes back with
  * no vectors we throw a clear error naming the endpoint and model rather than
  * silently upserting garbage. Mirrors the raw-client style in agents/llm.ts.
@@ -31,7 +31,7 @@ let client: OpenAI | null = null;
 
 function getClient(): OpenAI {
   if (!ragConfig.embeddingApiKey) {
-    throw new Error("EMBEDDING_API_KEY (or OPENROUTER_API_KEY) is not configured for embeddings.");
+    throw new Error("EMBEDDING_API_KEY (or AI_GATEWAY_API_KEY) is not configured for embeddings.");
   }
   if (!client) {
     client = new OpenAI({

@@ -111,8 +111,8 @@ const envSchema = z.object({
 
   // --- LLM providers ---
   LLM_PROVIDER: z
-    .enum(["anthropic", "openai", "google", "openrouter", "tokenrouter", "vercel"])
-    .default("openrouter"),
+    .enum(["anthropic", "openai", "google", "vercel"])
+    .default("vercel"),
   LLM_MODEL: z.string().optional(),
   // Escape hatch for the reasoning-effort rule in agents/llm.ts. Leave unset:
   // the default is derived from the model name. Set it when a new model needs a
@@ -221,8 +221,6 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
-  OPENROUTER_API_KEY: z.string().optional(),
-  TOKENROUTER_API_KEY: z.string().optional(),
   // Vercel AI Gateway (LLM_PROVIDER=vercel). Same name Vercel's own SDKs read.
   AI_GATEWAY_API_KEY: z.string().optional(),
   TAVILY_API_KEY: z.preprocess((v) => v || undefined, z.string().optional()),
@@ -291,7 +289,7 @@ const envSchema = z.object({
   // given model — if so, point EMBEDDING_BASE_URL at an OpenAI-compatible
   // embeddings provider (OpenAI, Voyage, Jina, Together, …). One env change,
   // no code change. EMBEDDING_MODEL + EMBEDDING_DIMENSIONS are required for RAG.
-  EMBEDDING_BASE_URL: z.string().default("https://openrouter.ai/api/v1"),
+  EMBEDDING_BASE_URL: z.string().default("https://ai-gateway.vercel.sh/v1"),
   EMBEDDING_API_KEY: z.preprocess((v) => v || undefined, z.string().optional()),
   EMBEDDING_MODEL: z.preprocess((v) => v || undefined, z.string().optional()),
   EMBEDDING_DIMENSIONS: z.preprocess(
@@ -403,8 +401,8 @@ if (configProblems.length > 0) {
 export const voiceServiceSecret = env.VOICE_SERVICE_SECRET ?? env.JWT_ACCESS_SECRET;
 
 /**
- * Resolved RAG settings. `apiKey` is the embeddings key with the OpenRouter key
- * as fallback, matching how the rest of the app authenticates to OpenRouter.
+ * Resolved RAG settings. `apiKey` is the embeddings key with the AI Gateway key
+ * as fallback, matching how the rest of the app authenticates to the gateway.
  */
 export const ragConfig = {
   pineconeApiKey: env.PINECONE_API_KEY,
@@ -413,7 +411,7 @@ export const ragConfig = {
   pineconeCloud: env.PINECONE_CLOUD,
   pineconeRegion: env.PINECONE_REGION,
   embeddingBaseUrl: env.EMBEDDING_BASE_URL,
-  embeddingApiKey: env.EMBEDDING_API_KEY ?? env.OPENROUTER_API_KEY,
+  embeddingApiKey: env.EMBEDDING_API_KEY ?? env.AI_GATEWAY_API_KEY,
   embeddingModel: env.EMBEDDING_MODEL,
   embeddingDimensions: env.EMBEDDING_DIMENSIONS,
   topK: env.RAG_TOP_K,

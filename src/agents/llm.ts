@@ -9,10 +9,6 @@ const DEFAULT_MODELS = {
   anthropic: "claude-sonnet-4-5",
   openai: "gpt-5.6-luna",
   google: "gemini-2.0-flash",
-  openrouter: "openai/gpt-5.6-luna",
-  // The -free variant cannot make tool calls (probed 2026-07-23), and every
-  // agent here forces one, so the paid model is the only usable default.
-  tokenrouter: "openai/gpt-5.6-luna",
   // Free-tier gateway accounts cannot call luna; gpt-5.4-nano is the newest
   // OpenAI model they can (probed 2026-10-09).
   vercel: "openai/gpt-5.4-nano",
@@ -20,8 +16,6 @@ const DEFAULT_MODELS = {
 
 /** OpenAI-compatible providers that route through a custom base URL + key. */
 const OPENAI_COMPAT: Partial<Record<string, { baseURL: string; key: () => string }>> = {
-  openrouter: { baseURL: "https://openrouter.ai/api/v1", key: () => requireKey(env.OPENROUTER_API_KEY, "OPENROUTER_API_KEY") },
-  tokenrouter: { baseURL: "https://api.tokenrouter.com/v1", key: () => requireKey(env.TOKENROUTER_API_KEY, "TOKENROUTER_API_KEY") },
   vercel: { baseURL: "https://ai-gateway.vercel.sh/v1", key: () => requireKey(env.AI_GATEWAY_API_KEY, "AI_GATEWAY_API_KEY") },
 };
 
@@ -53,10 +47,8 @@ export function getChatModel(): BaseChatModel {
         model,
         apiKey: requireKey(env.GOOGLE_API_KEY, "GOOGLE_API_KEY"),
       });
-    case "openrouter":
-    case "tokenrouter":
     case "vercel": {
-      // All OpenAI-compatible; model names are namespaced (e.g. "z-ai/glm-5.2").
+      // OpenAI-compatible; model names are namespaced (e.g. "openai/gpt-5.4-nano").
       const compat = OPENAI_COMPAT[env.LLM_PROVIDER]!;
       return new ChatOpenAI({
         model,

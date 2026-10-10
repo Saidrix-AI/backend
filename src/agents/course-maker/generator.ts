@@ -17,7 +17,7 @@ export type GeneratorDeps = LlmDeps;
 
 export function resolveGeneratorDeps(): GeneratorDeps {
   if (!hasOpenAICompatProvider()) {
-    throw new ApiError(503, "Course generation needs an OpenAI-compatible LLM provider (openai or openrouter).");
+    throw new ApiError(503, "Course generation needs an OpenAI-compatible LLM provider (vercel or openai).");
   }
   return { model: env.COURSE_MAKER_MODEL ?? getModelName() };
 }

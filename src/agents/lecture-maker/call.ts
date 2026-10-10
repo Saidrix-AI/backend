@@ -36,14 +36,14 @@ export type LectureRole = "classifier" | "analyst" | "planner" | "worker" | "svg
  * cheap-but-dull critic, not a broken one.
  */
 export function svgDefaultModel(provider: string): string {
-  // Every gateway (openrouter, tokenrouter, vercel) wants the vendor prefix;
+  // The gateway (vercel) wants the vendor prefix;
   // only OpenAI itself takes the bare id.
   return provider === "openai" ? "gpt-5.6-luna" : "openai/gpt-5.6-luna";
 }
 
 export function resolveLectureDeps(role: LectureRole): LlmDeps {
   if (!hasOpenAICompatProvider()) {
-    throw new ApiError(503, "Lecture generation needs an OpenAI-compatible LLM provider (openai or openrouter).");
+    throw new ApiError(503, "Lecture generation needs an OpenAI-compatible LLM provider (vercel or openai).");
   }
   const fallback = getModelName();
   // The analyst is one short call whose output sets the quality ceiling for the

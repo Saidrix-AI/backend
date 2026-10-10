@@ -35,7 +35,7 @@ async function main() {
   if (!isRagEnabled()) {
     console.error(
       "RAG is not configured. Set PINECONE_API_KEY, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS and an " +
-        "embeddings key (EMBEDDING_API_KEY or OPENROUTER_API_KEY) in .env, then re-run.",
+        "embeddings key (EMBEDDING_API_KEY or AI_GATEWAY_API_KEY) in .env, then re-run.",
     );
     process.exit(1);
   }
