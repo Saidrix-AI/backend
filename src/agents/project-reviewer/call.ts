@@ -18,7 +18,7 @@ export type { LlmDeps, ParseResult } from "../shared/forcedToolCall.js";
 
 export function resolveReviewDeps(): LlmDeps {
   if (!hasOpenAICompatProvider()) {
-    throw new ApiError(503, "Project review needs an OpenAI-compatible LLM provider (openai or openrouter).");
+    throw new ApiError(503, "Project review needs an OpenAI-compatible LLM provider (vercel or openai).");
   }
   return { model: env.PROJECT_REVIEW_MODEL ?? getModelName() };
 }
