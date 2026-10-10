@@ -71,12 +71,30 @@ function demoFor(s: StoredSection): { kind: "code" | "draw"; blockId: string } |
   return null;
 }
 
-/** The teaching spine the voice agent walks: one beat per section that has tutor instructions. */
+/** Server-built sections (the quiz, resources, downloads) are not taught. */
+const UNTAUGHT_BLOCKS = new Set(["quiz", "resources", "downloads"]);
+
+function isTaught(s: StoredSection): boolean {
+  return Boolean(s.tutor) || s.blocks.some((b) => !UNTAUGHT_BLOCKS.has(String(b.type)));
+}
+
+/** What a section without tutor notes is taught from: its title. The live tutor plans the rest. */
+function contentOnlyTutor(s: StoredSection): NonNullable<StoredSection["tutor"]> {
+  return { goal: s.title, explain: [], check: { mustShow: `They understand ${s.title}`, mode: "verbal", weight: "light" } };
+}
+
+/**
+ * The teaching spine the voice agent walks: one beat per taught section.
+ *
+ * Sections are content; the tutor plans how to teach them at class start
+ * (voice-service class_plan.py). Older lectures still carry `tutor` notes, and
+ * those ride along as hints.
+ */
 export function sectionsToBeats(sections: StoredSection[]) {
   return sections
-    .filter((s) => s.tutor)
+    .filter(isTaught)
     .map((s) => {
-      const t = s.tutor!;
+      const t = s.tutor ?? contentOnlyTutor(s);
       return {
         id: s.id,
         topicId: s.topicId,
