@@ -237,6 +237,7 @@ const createPathCourses: RegisteredTool = {
       : latestLearningPath(ctx.userId)
     ).catch(() => null);
     if (!path) {
+      console.warn(`[create_path_courses] no learning path found (pathId=${parsed.data.pathId ?? "latest"})`);
       return {
         ok: false,
         label: "Couldn't create courses",
@@ -264,6 +265,7 @@ const createPathCourses: RegisteredTool = {
       } catch (err) {
         // Out of quota stops the rest — every later one would fail the same way.
         const message = err instanceof Error ? err.message : "failed";
+        console.warn(`[create_path_courses] step ${order} "${title}" failed:`, err);
         failed.push(`"${title}": ${message}`);
         if (/limit|quota|allowance/i.test(message)) break;
       }

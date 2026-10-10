@@ -192,7 +192,7 @@ const DELETION_CAP_MESSAGE =
 /**
  * Streams the tutor reply token-by-token with tool use.
  *
- * openai / openrouter providers run a real tool-calling loop: the model may
+ * openai / vercel providers run a real tool-calling loop: the model may
  * call `web_search` (Tavily) or — when `options.userId` is set — the per-user
  * database tools (profile/progress reads, course/project/routine CRUD). Tool
  * results are fed back until the model produces a final answer. Reasoning
@@ -207,7 +207,7 @@ export async function* streamChatAgent(
   options: StreamOptions = {},
 ): AsyncGenerator<AgentStreamEvent> {
   const model = getModelName();
-  // Asking OpenRouter for reasoning tokens: a non-standard field, so it rides in
+  // Asking the gateway for reasoning tokens: a non-standard field, so it rides in
   // modelKwargs. Providers that don't know it ignore it, and the deltas simply
   // never arrive — the answer still streams.
   const chat = getChatModelFor(model, undefined, { modelKwargs: { include_reasoning: true } });

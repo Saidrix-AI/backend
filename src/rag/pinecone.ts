@@ -104,3 +104,39 @@ export async function fetchHashes(ids: string[]): Promise<Map<string, string>> {
   }
   return out;
 }
+
+/**
+ * Every stored chunk whose id starts with `prefix`, as sourcePath → its text in
+ * chunk order. Ids are `${sourcePath}#${chunkIndex}` (rag/chunk.ts chunkId), so
+ * one prefix walk recovers whole documents from the index alone — which is how
+ * a production host with no PDFs rebuilds the curriculum templates.
+ */
+export async function documentsByPrefix(prefix: string): Promise<Map<string, string>> {
+  const index = namespaced();
+  const ids: string[] = [];
+  let token: string | undefined;
+  do {
+    const page = await index.listPaginated({ prefix, limit: 100, ...(token ? { paginationToken: token } : {}) });
+    for (const v of page.vectors ?? []) if (v.id) ids.push(v.id);
+    token = page.pagination?.next;
+  } while (token);
+
+  const parts = new Map<string, { i: number; text: string }[]>();
+  const BATCH = 100;
+  for (let i = 0; i < ids.length; i += BATCH) {
+    const res = await index.fetch({ ids: ids.slice(i, i + BATCH) });
+    for (const [id, rec] of Object.entries(res.records ?? {})) {
+      const meta = (rec.metadata ?? {}) as Record<string, unknown>;
+      const sourcePath = typeof meta.sourcePath === "string" ? meta.sourcePath : id.slice(0, id.lastIndexOf("#"));
+      const text = typeof meta.text === "string" ? meta.text : "";
+      const n = Number(meta.chunkIndex ?? id.slice(id.lastIndexOf("#") + 1));
+      if (!text) continue;
+      const list = parts.get(sourcePath) ?? [];
+      list.push({ i: Number.isFinite(n) ? n : 0, text });
+      parts.set(sourcePath, list);
+    }
+  }
+  return new Map(
+    [...parts].map(([path, list]) => [path, list.sort((a, b) => a.i - b.i).map((p) => p.text).join("\n\n")]),
+  );
+}

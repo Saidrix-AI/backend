@@ -111,8 +111,8 @@ const envSchema = z.object({
 
   // --- LLM providers ---
   LLM_PROVIDER: z
-    .enum(["anthropic", "openai", "google", "openrouter", "tokenrouter", "vercel"])
-    .default("openrouter"),
+    .enum(["anthropic", "openai", "google", "vercel"])
+    .default("vercel"),
   LLM_MODEL: z.string().optional(),
   // Escape hatch for the reasoning-effort rule in agents/llm.ts. Leave unset:
   // the default is derived from the model name. Set it when a new model needs a
@@ -126,15 +126,19 @@ const envSchema = z.object({
   // models — 60s was enough for gpt-4o-mini but times out the lecture planner
   // and project planner on a reasoning model. Raise this if calls still time out.
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
-  // Throttles for the LLM fan-out, enforced in agents/shared/llmGate.ts. Both
-  // default to 0 = unlimited, so a provider with headroom is untouched. Set
-  // them when the provider caps you: generation issues ~70 calls per lecture,
+  // Throttles for the LLM fan-out, enforced in agents/shared/llmGate.ts.
+  // Requests per minute defaults to 30 (the app's own cap, no env needed);
+  // concurrency defaults to 0 = unlimited. 0 for either means no cap. Why a cap: generation issues ~70 calls per lecture,
   // many in parallel, and without a gate every call past the cap 429s and the
   // whole job is discarded. LLM_REQUESTS_PER_MINUTE should be set to the
   // provider's actual per-minute allowance, not an optimistic guess — a 429
   // costs the same quota as a success on gateways that count failed attempts.
-  LLM_MAX_CONCURRENCY: z.coerce.number().int().min(0).default(0),
-  LLM_REQUESTS_PER_MINUTE: z.coerce.number().int().min(0).default(0),
+  // Blank counts as unset: z.coerce would read "" as 0 and silently lift the cap.
+  LLM_MAX_CONCURRENCY: z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().int().min(0).default(0)),
+  LLM_REQUESTS_PER_MINUTE: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.coerce.number().int().min(0).default(30),
+  ),
   // Last resort for the generation agents when LLM_MODEL keeps failing with
   // transient provider errors — see runForcedToolCall. Unset (the default)
   // means no fallback and the failure surfaces as it always did. Point it at a
@@ -230,8 +234,6 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
-  OPENROUTER_API_KEY: z.string().optional(),
-  TOKENROUTER_API_KEY: z.string().optional(),
   // Vercel AI Gateway (LLM_PROVIDER=vercel). Same name Vercel's own SDKs read.
   AI_GATEWAY_API_KEY: z.string().optional(),
   TAVILY_API_KEY: z.preprocess((v) => v || undefined, z.string().optional()),
@@ -300,7 +302,7 @@ const envSchema = z.object({
   // given model — if so, point EMBEDDING_BASE_URL at an OpenAI-compatible
   // embeddings provider (OpenAI, Voyage, Jina, Together, …). One env change,
   // no code change. EMBEDDING_MODEL + EMBEDDING_DIMENSIONS are required for RAG.
-  EMBEDDING_BASE_URL: z.string().default("https://openrouter.ai/api/v1"),
+  EMBEDDING_BASE_URL: z.string().default("https://ai-gateway.vercel.sh/v1"),
   EMBEDDING_API_KEY: z.preprocess((v) => v || undefined, z.string().optional()),
   EMBEDDING_MODEL: z.preprocess((v) => v || undefined, z.string().optional()),
   EMBEDDING_DIMENSIONS: z.preprocess(
@@ -412,8 +414,8 @@ if (configProblems.length > 0) {
 export const voiceServiceSecret = env.VOICE_SERVICE_SECRET ?? env.JWT_ACCESS_SECRET;
 
 /**
- * Resolved RAG settings. `apiKey` is the embeddings key with the OpenRouter key
- * as fallback, matching how the rest of the app authenticates to OpenRouter.
+ * Resolved RAG settings. `apiKey` is the embeddings key with the AI Gateway key
+ * as fallback, matching how the rest of the app authenticates to the gateway.
  */
 export const ragConfig = {
   pineconeApiKey: env.PINECONE_API_KEY,
@@ -422,7 +424,7 @@ export const ragConfig = {
   pineconeCloud: env.PINECONE_CLOUD,
   pineconeRegion: env.PINECONE_REGION,
   embeddingBaseUrl: env.EMBEDDING_BASE_URL,
-  embeddingApiKey: env.EMBEDDING_API_KEY ?? env.OPENROUTER_API_KEY,
+  embeddingApiKey: env.EMBEDDING_API_KEY ?? env.AI_GATEWAY_API_KEY,
   embeddingModel: env.EMBEDDING_MODEL,
   embeddingDimensions: env.EMBEDDING_DIMENSIONS,
   topK: env.RAG_TOP_K,

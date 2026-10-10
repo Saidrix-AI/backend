@@ -17,7 +17,7 @@
  * own and 429 the gated generation calls alongside it. If you add a new caller,
  * wrap it — the gate is only as accurate as its coverage.
  *
- * Two mechanisms, both off by default so a provider with headroom is unaffected:
+ * Two mechanisms. Requests per minute defaults to 30; concurrency is off unless set:
  *
  *   LLM_MAX_CONCURRENCY      how many requests may be in flight at once
  *   LLM_REQUESTS_PER_MINUTE  how many may *start* in any rolling 60s

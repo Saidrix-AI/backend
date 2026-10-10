@@ -8,17 +8,17 @@ import { env } from "../src/config/env.js";
  * The key is read from the environment — never hardcoded. A literal key here
  * once made it into the working tree and had to be rotated; keep it this way.
  */
-const apiKey = env.TOKENROUTER_API_KEY ?? env.OPENROUTER_API_KEY;
+const apiKey = env.AI_GATEWAY_API_KEY;
 if (!apiKey) {
-  console.error("Set TOKENROUTER_API_KEY (or OPENROUTER_API_KEY) in backend/.env first.");
+  console.error("Set AI_GATEWAY_API_KEY in backend/.env first.");
   process.exit(1);
 }
 
 const client = new OpenAI({
   apiKey,
-  baseURL: process.env.PROBE_BASE_URL ?? "https://api.tokenrouter.com/v1",
+  baseURL: process.env.PROBE_BASE_URL ?? "https://ai-gateway.vercel.sh/v1",
 });
-const model = process.env.PROBE_MODEL ?? env.LLM_MODEL ?? "z-ai/glm-5.2-free";
+const model = process.env.PROBE_MODEL ?? env.LLM_MODEL ?? "openai/gpt-5.4-nano";
 
 // 1. Basic chat
 try {

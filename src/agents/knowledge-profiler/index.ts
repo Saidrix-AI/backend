@@ -35,7 +35,7 @@ const MAX_OUTPUT_TOKENS = 4096;
 
 export function resolveProfilerDeps(): LlmDeps {
   if (!hasOpenAICompatProvider()) {
-    throw new ApiError(503, "The knowledge check needs an OpenAI-compatible LLM provider (openai or openrouter).");
+    throw new ApiError(503, "The knowledge check needs an OpenAI-compatible LLM provider (vercel or openai).");
   }
   return { model: env.ASSESSMENT_MODEL ?? env.COURSE_MAKER_MODEL ?? getModelName() };
 }
