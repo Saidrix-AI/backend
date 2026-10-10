@@ -1,3 +1,4 @@
+import type { CurriculumRef } from "../rag/curriculum.js";
 import { Types } from "mongoose";
 import { LearningPathModel } from "../database/models/learningPath.model.js";
 import { buildPathSteps, getActiveState, type PathStep } from "./activeSelection.service.js";
@@ -9,6 +10,8 @@ export interface PathCourse {
   covers?: string;
   /** 1-3 words naming the step, listed down the side of the path. */
   theme?: string;
+  /** The curriculum template course this step comes from, if any. */
+  template?: CurriculumRef | null;
 }
 
 /** Persists a proposed multi-course path; returns the saved doc (with its _id). */

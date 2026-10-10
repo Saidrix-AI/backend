@@ -2,6 +2,10 @@
 // then embeds every PDF in the folder.
 //   Run:   npx tsx scripts/ingest-pdfs.ts ["D:/Data of Lesson/output/pdf"] [--dry]
 //   --dry  converts + chunks only and prints a sample; touches nothing remote.
+//   --templates-only  re-extracts the curriculum templates (Mongo) and leaves
+//                     the vectors alone.
+// Every run also extracts one CurriculumTemplate per PDF (an LLM call each),
+// which the intake, the course proposal and the course outline read.
 // Needs `pdftotext` (poppler) on PATH — Git for Windows ships it.
 import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
@@ -15,12 +19,15 @@ import {
   mergeSmallChunks,
   type Chunk,
 } from "../src/rag/chunk.js";
+import { connectDatabase, disconnectDatabase } from "../src/database/connect.js";
+import { extractTemplate, saveTemplates, type Template } from "../src/rag/curriculum.js";
 import { embed } from "../src/rag/embeddings.js";
 import { pdfCategory, pdfTextToMarkdown } from "../src/rag/pdfText.js";
 import { deleteAllVectors, ensureIndex, upsertVectors, type VectorRecord } from "../src/rag/pinecone.js";
 
 const args = process.argv.slice(2);
 const dry = args.includes("--dry");
+const templatesOnly = args.includes("--templates-only");
 const dir = args.find((a) => !a.startsWith("--")) ?? "D:/Data of Lesson/output/pdf";
 
 function pdfText(file: string): string {
@@ -35,11 +42,18 @@ async function main() {
   console.log(`Found ${files.length} PDFs in ${dir}.`);
 
   const chunks: Chunk[] = [];
+  const texts: { sourcePath: string; text: string }[] = [];
   for (const name of files) {
     const markdown = pdfTextToMarkdown(pdfText(path.join(dir, name)));
+    texts.push({ sourcePath: `Lesson-PDFs/${name}`, text: markdown });
     chunks.push(...mergeSmallChunks(chunkFile(markdown, `Lesson-PDFs/${name}`, pdfCategory(name))));
   }
   console.log(`Produced ${chunks.length} chunks.`);
+
+  if (!dry) {
+    await ingestTemplates(texts);
+    if (templatesOnly) return;
+  }
 
   if (dry) {
     for (const c of chunks.filter((c) => c.sourcePath.includes("python-foundation")).slice(0, 4)) {
@@ -86,6 +100,43 @@ async function main() {
     console.log(`  …${done}/${chunks.length} embedded + upserted`);
   }
   console.log(`Done. ${done} vectors from ${files.length} PDFs.`);
+}
+
+/**
+ * One template per PDF, stored in Mongo. The sourcePath is the same string the
+ * vectors carry, so a template's own chunks can be fetched by filter. A PDF
+ * whose extraction fails is reported and left out; the rest still save.
+ */
+async function ingestTemplates(texts: { sourcePath: string; text: string }[]) {
+  await connectDatabase();
+  try {
+    const templates: Template[] = [];
+    const CONCURRENCY = 4;
+    for (let i = 0; i < texts.length; i += CONCURRENCY) {
+      const batch = texts.slice(i, i + CONCURRENCY);
+      const results = await Promise.allSettled(batch.map((t) => extractTemplate(t.text, t.sourcePath)));
+      results.forEach((r, j) => {
+        const src = batch[j]!.sourcePath;
+        if (r.status === "fulfilled") {
+          templates.push(r.value);
+          console.log(`  template ${src} → ${r.value.kind} "${r.value.skill}" (${r.value.courses.length} course(s))`);
+        } else {
+          console.warn(`  template ${src} FAILED: ${r.reason instanceof Error ? r.reason.message : r.reason}`);
+        }
+      });
+    }
+    if (templates.length < texts.length) {
+      // saveTemplates deletes templates missing from the list; a failed
+      // extraction must not wipe a good template from an earlier run.
+      console.warn(`${texts.length - templates.length} extraction(s) failed; keeping their previous templates.`);
+      for (const t of templates) await saveTemplates([t], { prune: false });
+    } else {
+      await saveTemplates(templates);
+    }
+    console.log(`Saved ${templates.length} curriculum templates.`);
+  } finally {
+    await disconnectDatabase();
+  }
 }
 
 main().catch((err) => {

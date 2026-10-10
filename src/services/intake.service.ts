@@ -1,4 +1,5 @@
 import { Types } from "mongoose";
+import { formatTemplate, resolveRef, type CurriculumRef } from "../rag/curriculum.js";
 import { decideProbe, type IntakeAnswer } from "../agents/intake/director.js";
 import { buildIntakeReport, type IntakeReport } from "../agents/intake/report.js";
 import type { TopicKind } from "../agents/intake/schema.js";
@@ -84,6 +85,8 @@ export interface IntakeContext {
   finishByDays: number;
   autoRoutine: boolean;
   routineTime: string;
+  /** The curriculum template the intake matched, or null. */
+  curriculum: CurriculumRef | null;
 }
 
 type Doc = LearningIntake & { _id: Types.ObjectId; save: () => Promise<unknown> };
@@ -108,6 +111,7 @@ function stateOf(doc: Doc): IntakeState {
     autoRoutine: Boolean(doc.autoRoutine),
     routineTime: doc.routineTime ?? "",
     plannedQuestions: planned,
+    curriculum: (doc.curriculum as IntakeState["curriculum"]) ?? null,
     // The plan writes both questions in one call, so either one proves it ran.
     planKnown: Boolean(planned.goal ?? planned.background),
   };
@@ -121,6 +125,7 @@ function applyPatch(doc: Doc, patch: Partial<IntakeState>): void {
   if (patch.plannedQuestions !== undefined) {
     doc.plannedQuestions = patch.plannedQuestions as unknown as typeof doc.plannedQuestions;
   }
+  if (patch.curriculum !== undefined) doc.curriculum = patch.curriculum as typeof doc.curriculum;
   if (patch.operatingSystem !== undefined) doc.operatingSystem = patch.operatingSystem;
   if (patch.tooling !== undefined) doc.tooling = patch.tooling;
   if (patch.foundation !== undefined) doc.foundation = patch.foundation;
@@ -231,6 +236,12 @@ function donePayload(doc: Doc): IntakeDonePayload {
       : "Auto-routine: NO — the student will set up their own routine, do not build one",
   );
   if (report?.summary) lines.push(`Summary: ${report.summary}`);
+  const ref = doc.curriculum as { sourcePath?: string } | null;
+  if (ref?.sourcePath) {
+    lines.push(
+      `Curriculum template: ${ref.sourcePath} — the course list comes from it; propose_courses fills it in server-side`,
+    );
+  }
 
   return {
     intakeId: String(doc._id),
@@ -421,12 +432,14 @@ export async function submitStage(
  */
 async function resolveProbe(userId: string, doc: Doc): Promise<void> {
   const state = stateOf(doc);
+  const match = await resolveRef(state.curriculum);
   const decision = await decideProbe({
     topic: doc.topic,
     objective: intakeObjective(doc),
     topicKind: state.topicKind,
     answers: transcript(doc),
     language: state.language,
+    ...(match ? { curriculum: formatTemplate(match) } : {}),
   });
 
   if (!decision.ask) {
@@ -647,6 +660,7 @@ export async function latestIntake(
     dailyMinutes: doc.dailyMinutes ?? 0,
     finishByDays: doc.finishByDays ?? 0,
     autoRoutine: Boolean(doc.autoRoutine),
+    curriculum: (doc.curriculum as CurriculumRef | null) ?? null,
     routineTime: doc.routineTime ?? "",
   };
 }

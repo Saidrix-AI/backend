@@ -46,13 +46,22 @@ QUESTION 2 — backgroundQuestion: how much of this subject they have ACTUALLY d
 Both questions:
 - 2-4 options, all realistic, together covering the common cases so nobody is forced to type.
 - Short enough to read on a phone.
-- Ask nothing about their schedule, their computer or their editor — separate questions cover all three, and asking twice is exactly what this redesign removed.`;
+- Ask nothing about their schedule, their computer or their editor — separate questions cover all three, and asking twice is exactly what this redesign removed.
+
+EXTRA QUESTIONS — extraQuestions (0-3): only what THIS subject raises and the course designer needs: which framework or platform, which track of a roadmap, which target exam. Leave it empty when there is nothing real to ask. Never re-ask goal or background.
+
+WHEN A SAIDRIX CURRICULUM TEMPLATE IS GIVEN, write from it, not from memory:
+- goal options = the template's real tracks, roles or courses (for a roadmap) or what its final project builds (for a foundation course);
+- background options = progress through the template's REAL modules, in order ("Never touched it", "Finished the first modules (name them)", …), using the actual module titles;
+- a "Choose one" or "Optional" step in a roadmap is a natural extra question.
+When only web results are given, use them the same way for the current tracks and tools.`;
 }
 
 export function buildPlanUserMessage(ctx: {
   topic: string;
   objective: string;
   language: Language;
+  reference?: string;
 }): string {
   return [
     languageInstruction(ctx.language),
@@ -60,6 +69,7 @@ export function buildPlanUserMessage(ctx: {
     `Topic: ${ctx.topic}`,
     `The student's request, in their own words: ${ctx.objective}`,
     "",
-    "Call emit_intake_plan with the classification and the two questions.",
+    ...(ctx.reference ? [ctx.reference, ""] : []),
+    "Call emit_intake_plan with the classification and the questions.",
   ].join("\n");
 }

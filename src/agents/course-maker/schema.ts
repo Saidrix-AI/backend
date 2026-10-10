@@ -48,6 +48,12 @@ export interface CourseBrief {
   learner?: string;
   /** Content language chosen in the guided intake; defaults to English. */
   language?: Language;
+  /**
+   * The Saidrix curriculum course this one is made from. When set, the outline
+   * has one chapter per template module, in order, and every chapter is
+   * grounded in that PDF's own chunks.
+   */
+  template?: { sourcePath: string; block: string; modules: string[] };
   withProjects: boolean;
 }
 

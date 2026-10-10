@@ -17,6 +17,8 @@ import {
   type Tooling,
 } from "../agents/tools/prompts/intake.js";
 import type { AskQuestion } from "../agents/tools/types.js";
+import { retrieveFreshness } from "../agents/shared/freshness.js";
+import { formatTemplate, matchCurriculum, toRef, type CurriculumRef } from "../rag/curriculum.js";
 import type { IntakeStageName } from "../database/models/learningIntake.model.js";
 import {
   isSpeechSupported,
@@ -59,7 +61,9 @@ export interface IntakeState {
   autoRoutine: boolean;
   routineTime: string;
   /** Questions the plan call wrote, held until their slot comes up. */
-  plannedQuestions: { goal?: AskQuestion; background?: AskQuestion };
+  plannedQuestions: { goal?: AskQuestion; background?: AskQuestion; extra?: AskQuestion[] };
+  /** The curriculum template this request matched, or null. */
+  curriculum?: CurriculumRef | null;
   /**
    * Whether the intake plan has run yet. Before it has, `topicKind` and
    * `needsLocalSetup` still hold their defaults, so the slots that depend on
@@ -147,16 +151,23 @@ export const INTAKE_SLOTS: IntakeSlot[] = [
       }
 
       const language = chosen.code;
+      const { curriculum, reference } = await intakeReference(s);
       const plan = await generateIntakePlan({
         topic: s.topic,
         objective: s.objective,
         language,
+        ...(reference ? { reference } : {}),
       });
       return {
         language,
         topicKind: plan.topicKind,
         needsLocalSetup: plan.needsLocalSetup,
-        plannedQuestions: { goal: plan.goalQuestion, background: plan.backgroundQuestion },
+        curriculum,
+        plannedQuestions: {
+          goal: plan.goalQuestion,
+          background: plan.backgroundQuestion,
+          extra: plan.extraQuestions,
+        },
       };
     },
   },
@@ -165,7 +176,9 @@ export const INTAKE_SLOTS: IntakeSlot[] = [
     key: "goal",
     label: "Goal",
     applies: () => true,
-    build: (s) => [s.plannedQuestions.goal ?? FALLBACK_GOAL],
+    // The plan's topic-specific extras ride with the goal: same moment, same
+    // card, and no new stage for the frontend to know about.
+    build: (s) => [s.plannedQuestions.goal ?? FALLBACK_GOAL, ...(s.plannedQuestions.extra ?? [])],
   },
 
   {
@@ -238,6 +251,25 @@ export const INTAKE_SLOTS: IntakeSlot[] = [
     interpret: (answers) => parseRoutineChoice(first(answers)),
   },
 ];
+
+/**
+ * What the plan writes its questions from: Saidrix's own template for this
+ * request when one matches, else a few fresh web results. Never throws — no
+ * reference just means the plan writes from the topic alone.
+ */
+async function intakeReference(
+  s: IntakeState,
+): Promise<{ curriculum: CurriculumRef | null; reference: string }> {
+  const request = `${s.topic}. ${s.objective}`;
+  const match = await matchCurriculum(request).catch(() => null);
+  if (match) return { curriculum: toRef(match), reference: formatTemplate(match) };
+  const fresh = await retrieveFreshness(s.topic, {
+    intent: "learning roadmap syllabus tracks",
+    maxResults: 3,
+    label: "intake",
+  }).catch(() => "");
+  return { curriculum: null, reference: fresh };
+}
 
 /** Used only if the plan call failed AND its own fallback never reached us. */
 const FALLBACK_GOAL: AskQuestion = {

@@ -10,6 +10,26 @@ import type { Level } from "../../validation/course.schema.js";
 import { makeCourse, type MadeCourse } from "./index.js";
 import { buildPathBoundary } from "./prompt.js";
 import type { CourseBrief } from "./schema.js";
+import { coursesOf, formatCourse, resolveRef, type CurriculumRef } from "../../rag/curriculum.js";
+
+/**
+ * The template course a generation follows: the path step's own reference, or
+ * the intake's match when it stands for exactly one course (a language's
+ * foundation, or one named step of a roadmap). A whole roadmap is not one
+ * course, so a standalone course from it gets no template.
+ */
+async function templateFor(ref: CurriculumRef | null | undefined): Promise<CourseBrief["template"] | undefined> {
+  const match = await resolveRef(ref);
+  if (!match) return undefined;
+  const courses = coursesOf(match);
+  if (courses.length !== 1) return undefined;
+  const { course } = courses[0]!;
+  return {
+    sourcePath: match.template.sourcePath,
+    block: `SAIDRIX CURRICULUM TEMPLATE — ${match.template.skill}\n${formatCourse(course)}`,
+    modules: course.modules.map((m) => m.title),
+  };
+}
 
 /**
  * Everything a course generation needs to know about the student, assembled in
@@ -69,8 +89,10 @@ export async function buildCourseRequest(
   if (!resolved) {
     resolved = await findPathEntryByObjective(userId, args.objective, args.titleHint);
   }
+  let templateRef: CurriculumRef | null = (!args.pathId && intake?.curriculum) || null;
   if (resolved) {
     const entry = resolved.path.courses[resolved.order - 1]!;
+    templateRef = (entry as { template?: CurriculumRef | null }).template ?? null;
     pathBrief = {
       objective: entry.objective,
       ...(entry.level ? { level: entry.level } : {}),
@@ -96,6 +118,8 @@ export async function buildCourseRequest(
       )
     : false;
 
+  const template = await templateFor(templateRef);
+
   const { pathId: _pathId, order: _order, ...rest } = args;
   const brief: CourseBrief = {
     ...rest,
@@ -113,6 +137,7 @@ export async function buildCourseRequest(
       : {}),
     ...(intake?.dailyMinutes ? { dailyMinutes: intake.dailyMinutes } : {}),
     ...(learner ? { learner } : {}),
+    ...(template ? { template } : {}),
   };
   return { brief, pathMeta };
 }

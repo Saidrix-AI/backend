@@ -31,7 +31,10 @@ async function expandChapter(
   // and a testing chapter of the same course have different current answers.
   // Chapters that search near-identical topics share the freshness cache.
   const [grounding, freshness] = await Promise.all([
-    retrieveGrounding(`${chapter.title} ${gen.title}`, { topK: 4 }),
+    retrieveGrounding(`${chapter.title} ${gen.title}`, {
+      topK: 4,
+      ...(brief.template ? { sourcePath: brief.template.sourcePath } : {}),
+    }),
     retrieveFreshness(`${gen.title} ${chapter.title}`, {
       intent: "current version deprecated best practices",
       label: "course-maker",

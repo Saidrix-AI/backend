@@ -6,6 +6,8 @@ import {
   getLearningPath,
   latestLearningPath,
 } from "../../services/learningPath.service.js";
+import { coursesOf, resolveRef, type CurriculumMatch } from "../../rag/curriculum.js";
+import type { PathCourse } from "../../services/learningPath.service.js";
 import { makeCourse } from "../course-maker/index.js";
 import { buildCourseRequest, makePathCourse } from "../course-maker/request.js";
 import { createPathCoursesTool, generateCourseTool, proposeCoursesTool } from "./prompts/course-maker.js";
@@ -69,24 +71,24 @@ const generateCourse: RegisteredTool = {
 // ---------------------------------------------------------------- the path
 
 /**
- * How big a learning path is, decided ON PURPOSE.
+ * How many courses a path has is decided by the SERVER, not the chat model.
  *
- * Every path used to come back with three courses — "Python fundamentals" got
- * three, "front-end basics" got three — because the only guidance was a range
- * ("1-3 steps", "1-4 steps") and a model asked for a number in a range picks
- * the middle. A required field with a stated rule is a decision the model has
- * to make out loud, and the count is then checked against it.
+ * When the intake matched one of Saidrix's curriculum templates, the courses
+ * are that template's: a language's foundation is one course, a career
+ * roadmap is exactly its steps, in its order, with its titles. The model's own
+ * list is ignored; it only supplies the goal line and the step labels.
+ *
+ * With no template, a request is one course unless it is a career goal
+ * ("career" breadth), which must cover the whole syllabus. The old middle
+ * size ("subject", 2-3 courses) produced the filler courses students saw, so
+ * it now means one course too.
  */
 export const BREADTHS = ["topic", "subject", "career"] as const;
 export type Breadth = (typeof BREADTHS)[number];
 
-export const BREADTH_RANGE: Record<Breadth, [number, number]> = {
-  topic: [1, 1],
-  subject: [2, 3],
-  career: [4, 10],
-};
+export const CAREER_RANGE: [number, number] = [4, 10];
 
-export const MAX_PATH_COURSES = 10;
+export const MAX_PATH_COURSES = 16;
 
 const proposeArgs = z.object({
   goal: z.string().min(1).max(200),
@@ -106,8 +108,9 @@ const proposeArgs = z.object({
     .min(1)
     .max(MAX_PATH_COURSES),
 });
+type ProposedCourse = z.infer<typeof proposeArgs>["courses"][number];
 
-/** A path whose size does not match its declared breadth — the model fixes it and retries. */
+/** A path whose size does not fit its breadth — the model fixes it and retries. */
 function breadthMismatch(breadth: Breadth, count: number, scope: "single" | "multi" | null): ToolOutcome | null {
   const retry = (why: string): ToolOutcome => ({
     ok: false,
@@ -115,21 +118,36 @@ function breadthMismatch(breadth: Breadth, count: number, scope: "single" | "mul
     modelText: `Invalid path: ${why} Fix the courses list and call propose_courses again.`,
   });
   if (scope === "single" && breadth === "career") {
+    return retry('the student asked about ONE topic, so breadth cannot be "career". Use "topic" with exactly ONE course.');
+  }
+  if (breadth !== "career") {
+    return count === 1
+      ? null
+      : retry(`${count} course(s) given, but anything short of a career goal is exactly ONE course — merge them into one course that covers the topic.`);
+  }
+  const [min, max] = CAREER_RANGE;
+  if (count < min || count > max) {
     return retry(
-      'the student asked about ONE topic, so breadth cannot be "career". Use "topic" (one course) — or "subject" only if the topic genuinely needs two or three distinct courses.',
+      `${count} course(s) given, but breadth "career" is 4-10 courses covering the whole syllabus for that role — add the missing subjects, or if it is one topic use "topic" with one course.`,
     );
   }
-  const [min, max] = BREADTH_RANGE[breadth];
-  if (count < min || count > max) {
-    const rule =
-      breadth === "topic"
-        ? 'breadth "topic" is exactly ONE course — merge them into one course that covers the topic.'
-        : breadth === "subject"
-          ? 'breadth "subject" is 2-3 courses — merge thin ones, or if it is really one topic use breadth "topic" with one course.'
-          : 'breadth "career" is 4-10 courses covering the whole syllabus for that role — add the missing subjects, or if it is narrower use "subject".';
-    return retry(`${count} course(s) given, but ${rule}`);
-  }
   return null;
+}
+
+/** The template's courses as path steps; the model's step labels are kept by position. */
+function templateCourses(match: CurriculumMatch, modelCourses: ProposedCourse[]) {
+  const steps = coursesOf(match);
+  return steps.map(({ course, index }, i) => {
+    const modules = course.modules.map((m) => m.title).join(", ");
+    const theme = steps.length === modelCourses.length ? modelCourses[i]?.theme : undefined;
+    return {
+      title: course.title,
+      objective: [course.summary || course.title, course.status ? `(${course.status})` : ""].filter(Boolean).join(" "),
+      covers: modules.slice(0, 400),
+      theme: theme ?? "",
+      template: { sourcePath: match.template.sourcePath, courseIndex: index },
+    };
+  });
 }
 
 const proposeCourses: RegisteredTool = {
@@ -140,34 +158,47 @@ const proposeCourses: RegisteredTool = {
     if (!parsed.success) return invalidArgs("Couldn't propose courses", parsed.error);
     try {
       const intake = await latestIntake(ctx.userId).catch(() => null);
-      const mismatch = breadthMismatch(parsed.data.breadth, parsed.data.courses.length, intake?.scope ?? null);
-      if (mismatch) return mismatch;
+      const match = await resolveRef(intake?.curriculum);
+
+      let courses: (PathCourse & { note?: string })[];
+      if (match) {
+        courses = templateCourses(match, parsed.data.courses);
+        console.info(
+          `[propose_courses] from template ${match.template.sourcePath}: ${courses.length} course(s) (model sent ${parsed.data.courses.length})`,
+        );
+      } else {
+        const mismatch = breadthMismatch(parsed.data.breadth, parsed.data.courses.length, intake?.scope ?? null);
+        if (mismatch) return mismatch;
+        courses = parsed.data.courses.map((c) => ({
+          title: c.title,
+          objective: c.objective,
+          ...(c.level ? { level: c.level } : {}),
+          covers: c.covers ?? c.note ?? "",
+          theme: c.theme ?? "",
+          ...(c.note ? { note: c.note } : {}),
+        }));
+      }
 
       // Persist the ordered plan so each course generation can pull this step's
       // scope and its siblings' boundaries from one authoritative source.
       const path = await createLearningPath(
         ctx.userId,
         parsed.data.goal,
-        parsed.data.courses.map((c) => ({
-          title: c.title,
-          objective: c.objective,
-          ...(c.level ? { level: c.level } : {}),
-          covers: c.covers ?? c.note ?? "",
-          theme: c.theme ?? "",
-        })),
+        courses.map(({ note: _note, ...c }) => c),
         parsed.data.summary ?? "",
       );
       const pathId = String(path._id);
-      const titles = parsed.data.courses.map((c, i) => `${i + 1}. "${c.title}"`).join(", ");
+      const titles = courses.map((c, i) => `${i + 1}. "${c.title}"`).join(", ");
       return {
         ok: true,
-        label: `Proposed ${parsed.data.courses.length} course${parsed.data.courses.length === 1 ? "" : "s"}`,
+        label: `Proposed ${courses.length} course${courses.length === 1 ? "" : "s"}`,
         modelText:
-          `Learning path saved (pathId=${pathId}, ${parsed.data.courses.length} courses in order): ${titles}. ` +
+          `Learning path saved (pathId=${pathId}, ${courses.length} courses in order): ${titles}. ` +
+          (match ? "These courses come from the Saidrix curriculum, not from your list; describe these. " : "") +
           "Nothing was created yet. End your turn with one short line asking them to pick. " +
           `When they reply with their selection, call create_path_courses ONCE with pathId="${pathId}" and the ` +
           "1-based numbers of every course they chose (the numbers in the list above).",
-        proposal: parsed.data.courses,
+        proposal: courses.map(({ template: _t, ...c }) => c),
       };
     } catch (err) {
       return failure("Couldn't propose courses", err);

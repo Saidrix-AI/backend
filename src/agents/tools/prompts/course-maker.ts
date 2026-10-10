@@ -58,11 +58,12 @@ export const proposeCoursesTool: OpenAI.Chat.ChatCompletionFunctionTool = {
   function: {
     name: "propose_courses",
     description:
-      "Show the student their learning path as ordered, selectable course cards — rendered as a visual roadmap (Step 1 → Step 2 → …) so they can see what comes first and pick what to create. Call this INSTEAD of writing a course plan as text; the cards are the only way the student can select. Use it for EVERY learn request once the guided intake is complete. FIRST decide `breadth` — it fixes how many courses the path has:\n" +
-      "- topic: ONE skill or tool — 'Python fundamentals', 'SQL basics', 'Git', 'Excel formulas', 'CSS Flexbox'. Exactly ONE course. One course of up to ~60 lessons covers a topic completely; never split a topic into 'part 1/2/3'.\n" +
-      "- subject: one field taken to a deeper target that genuinely needs distinct subjects — 'Python for data analysis from zero' (Python basics → pandas & data cleaning → visualisation). 2-3 courses.\n" +
-      "- career: a role or broad goal — 'become a web developer', 'data scientist', 'full-stack', 'Android developer'. 4-10 courses covering the WHOLE syllabus a working practitioner needs, each a distinct subject, e.g. web development: HTML → CSS → JavaScript → Git & GitHub → React → Node.js & Express → Databases → Deployment.\n" +
-      "Every course must be a distinct subject worth a real course (25+ lessons) — merge thin ones. Leave out subjects the student's profile says they already know. Saves the ordered path and returns a pathId; creates no courses. Write all fields in the language the intake named.",
+      "Show the student their learning path as ordered, selectable course cards — rendered as a visual roadmap (Step 1 → Step 2 → …) so they can see what comes first and pick what to create. Call this INSTEAD of writing a course plan as text; the cards are the only way the student can select. Use it for EVERY learn request once the guided intake is complete.\n" +
+      "When the intake summary names a curriculum template, the SERVER fills the course list from it (one course for a language, exactly the roadmap's steps for a career); send your best list anyway, it is only used for the step labels.\n" +
+      "Otherwise decide `breadth`, which fixes how many courses the path has:\n" +
+      "- topic / subject: ONE skill, tool or field — 'Python', 'SQL', 'Git', 'Python for data analysis'. Exactly ONE course, never split into parts.\n" +
+      "- career: only when the student asked for a role or career path — 'become a web developer', 'Android developer'. 4-10 courses covering the WHOLE syllabus a working practitioner needs, each a distinct subject.\n" +
+      "Leave out subjects the student's profile says they already know. Saves the ordered path and returns a pathId; creates no courses. Write all fields in the language the intake named.",
     parameters: {
       type: "object",
       properties: {
@@ -70,7 +71,7 @@ export const proposeCoursesTool: OpenAI.Chat.ChatCompletionFunctionTool = {
           type: "string",
           enum: ["topic", "subject", "career"],
           description:
-            "topic = one skill (exactly 1 course); subject = one field to a deeper target (2-3 courses); career = a role or broad goal (4-10 courses, the full syllabus). Decide this BEFORE writing the courses.",
+            "topic or subject = exactly 1 course; career = a role or career path the student asked for (4-10 courses, the full syllabus). Ignored when a curriculum template matched.",
         },
         goal: {
           type: "string",
@@ -84,7 +85,7 @@ export const proposeCoursesTool: OpenAI.Chat.ChatCompletionFunctionTool = {
         courses: {
           type: "array",
           description:
-            "The path's courses STRICTLY in learning order, foundational first — as many as `breadth` says (topic 1, subject 2-3, career 4-10). Their `covers` scopes must NOT overlap — each course owns a distinct slice so nothing is taught twice across the path.",
+            "The path's courses STRICTLY in learning order, foundational first — as many as `breadth` says (topic/subject 1, career 4-10). Their `covers` scopes must NOT overlap — each course owns a distinct slice so nothing is taught twice across the path.",
           items: {
             type: "object",
             required: ["title", "objective", "covers", "theme"],

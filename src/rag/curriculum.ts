@@ -179,8 +179,10 @@ export async function listTemplates(): Promise<Template[]> {
   return templates;
 }
 
-export async function saveTemplates(templates: Template[]): Promise<void> {
-  await CurriculumTemplateModel.deleteMany({ sourcePath: { $nin: templates.map((t) => t.sourcePath) } });
+export async function saveTemplates(templates: Template[], opts: { prune?: boolean } = {}): Promise<void> {
+  if (opts.prune !== false) {
+    await CurriculumTemplateModel.deleteMany({ sourcePath: { $nin: templates.map((t) => t.sourcePath) } });
+  }
   for (const t of templates) {
     await CurriculumTemplateModel.updateOne({ sourcePath: t.sourcePath }, { $set: t }, { upsert: true });
   }
@@ -279,6 +281,43 @@ export async function matchCurriculum(request: string, deps?: LlmDeps): Promise<
     `[curriculum] "${request.slice(0, 60)}" → ${match ? `${match.template.skill} (${match.template.kind}${match.courseIndex != null ? `, course ${match.courseIndex + 1}` : ""})` : "no template"}`,
   );
   return match;
+}
+
+/**
+ * What an intake or a path step stores: which template, and which course of
+ * it. Stored as a reference rather than a copy, so re-ingesting the PDFs
+ * updates every course made from them afterwards.
+ */
+export interface CurriculumRef {
+  sourcePath: string;
+  courseIndex: number | null;
+}
+
+export function toRef(match: CurriculumMatch): CurriculumRef {
+  return { sourcePath: match.template.sourcePath, courseIndex: match.courseIndex };
+}
+
+/** The stored reference back to a match, or null when its template is gone. */
+export async function resolveRef(ref: CurriculumRef | null | undefined): Promise<CurriculumMatch | null> {
+  if (!ref?.sourcePath) return null;
+  try {
+    const template = (await listTemplates()).find((t) => t.sourcePath === ref.sourcePath);
+    if (!template) return null;
+    const i = ref.courseIndex;
+    return { template, courseIndex: i != null && i >= 0 && i < template.courses.length ? i : null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The courses a match stands for, in order: a foundation is its one course, a
+ * roadmap narrowed to one step is that step, and a whole roadmap is every step.
+ */
+export function coursesOf(match: CurriculumMatch): { course: TemplateCourse; index: number }[] {
+  const all = match.template.courses.map((course, index) => ({ course, index }));
+  if (match.courseIndex != null) return all.slice(match.courseIndex, match.courseIndex + 1);
+  return match.template.kind === "foundation" ? all.slice(0, 1) : all;
 }
 
 // ---------------------------------------------------------------- rendering

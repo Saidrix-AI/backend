@@ -8,6 +8,9 @@ import { z } from "zod";
  */
 export const GOAL_QUESTION_COUNT = 1;
 
+/** Topic-specific questions the plan may add on top of goal and background. */
+export const MAX_EXTRA_QUESTIONS = 3;
+
 export const intakeQuestionSchema = z.object({
   header: z.string().trim().min(1).max(40),
   question: z.string().trim().min(1).max(300),
@@ -34,8 +37,26 @@ export const intakePlanSchema = z.object({
   needsLocalSetup: z.boolean().catch(false),
   goalQuestion: intakeQuestionSchema,
   backgroundQuestion: intakeQuestionSchema,
+  /**
+   * Up to three more questions only THIS subject raises (which framework,
+   * which platform, which roadmap track). Asked alongside the goal question.
+   * Invalid ones are dropped rather than failing the plan.
+   */
+  extraQuestions: z
+    .array(z.unknown())
+    .catch([])
+    .default([])
+    .transform((list) =>
+      list
+        .map((q) => intakeQuestionSchema.safeParse(q))
+        .filter((r) => r.success)
+        .map((r) => r.data!)
+        .slice(0, MAX_EXTRA_QUESTIONS),
+    ),
 });
-export type IntakePlan = z.infer<typeof intakePlanSchema>;
+export type IntakePlan = Omit<z.infer<typeof intakePlanSchema>, "extraQuestions"> & {
+  extraQuestions?: IntakeQuestion[];
+};
 
 /** One question out of whatever envelope and key names the model used. */
 function questionAt(raw: unknown, fallbackHeader: string): unknown {
@@ -67,6 +88,9 @@ export function normalizePlan(raw: unknown): unknown {
     needsLocalSetup: Boolean(p.needsLocalSetup ?? p.needs_local_setup ?? p.needsSetup),
     goalQuestion: questionAt(p.goalQuestion ?? list[0], "Goal"),
     backgroundQuestion: questionAt(p.backgroundQuestion ?? p.background ?? list[1], "Background"),
+    extraQuestions: (Array.isArray(p.extraQuestions) ? p.extraQuestions : list.slice(2)).map((q) =>
+      questionAt(q, "Focus"),
+    ),
   };
 }
 
@@ -101,6 +125,20 @@ export const emitIntakePlanTool: OpenAI.Chat.ChatCompletionFunctionTool = {
               type: "array",
               description: "2-4 short, concrete outcomes specific to THIS subject",
               items: { type: "string" },
+            },
+          },
+        },
+        extraQuestions: {
+          type: "array",
+          description:
+            "0-3 more questions only THIS subject raises (framework, platform, roadmap track). Empty when goal and background already cover it.",
+          items: {
+            type: "object",
+            required: ["header", "question", "options"],
+            properties: {
+              header: { type: "string", description: "1-2 words" },
+              question: { type: "string" },
+              options: { type: "array", items: { type: "string" }, description: "2-4 short options" },
             },
           },
         },
