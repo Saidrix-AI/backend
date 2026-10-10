@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gatedLlmCall, isTransient } from "../src/agents/shared/llmGate.js";
-import { env } from "../src/config/env.js";
 
 /*
  * The gate answers two provider failures, and they call for opposite things.
@@ -38,10 +37,6 @@ async function runWithFakeTimers<T>(fn: () => Promise<T>): Promise<T> {
 
 beforeEach(() => {
   vi.useFakeTimers();
-  // tests/setup.ts turns the throttle off; these tests are about the retry
-  // behaviour, not the rate window, so leaving it off keeps them deterministic.
-  env.LLM_MAX_CONCURRENCY = 0;
-  env.LLM_REQUESTS_PER_MINUTE = 0;
 });
 
 afterEach(() => {

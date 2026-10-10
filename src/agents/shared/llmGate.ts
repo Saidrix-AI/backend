@@ -17,38 +17,19 @@
  * own and 429 the gated generation calls alongside it. If you add a new caller,
  * wrap it — the gate is only as accurate as its coverage.
  *
- * Two mechanisms, both off by default so a provider with headroom is unaffected:
+ * There is no client-side rate or concurrency cap (LLM_MAX_CONCURRENCY and
+ * LLM_REQUESTS_PER_MINUTE were removed 2026-10-10): calls go out as fast as
+ * they are made, and the provider's own limit is respected only through the
+ * 429 handling below.
  *
- *   LLM_MAX_CONCURRENCY      how many requests may be in flight at once
- *   LLM_REQUESTS_PER_MINUTE  how many may *start* in any rolling 60s
- *
- * And one that is always on: a 429 is retried after waiting out the window
+ * What remains: a 429 is retried after waiting out the window
  * rather than immediately. That is not a style preference — the gateway's own
  * message reads "Maximum 2 requests within 1 minutes, **Including the number of
  * failed attempts**", so a retry storm spends the very quota it is waiting for.
  * Retrying fast against a limiter that counts failures makes the outage longer.
  */
 
-import { env } from "../../config/env.js";
-
 const WINDOW_MS = 60_000;
-
-/**
- * Extra wait before reusing a window slot.
- *
- * The provider's window is not the same clock as ours and runs slightly longer:
- * releasing at exactly WINDOW_MS + 25ms was measured 429ing every time, and
- * because this gateway counts failed attempts against the quota, a request that
- * arrives one second early does not merely get rejected — it spends the budget
- * it was waiting for, costing a whole extra window. Two seconds of patience is
- * far cheaper than that.
- */
-const WINDOW_MARGIN_MS = 2_000;
-
-/** Requests that have started inside the current rolling window. */
-const starts: number[] = [];
-let inFlight = 0;
-const waiting: Array<() => void> = [];
 
 /**
  * When the provider has told us to stop, and until when. Shared, not per-call.
@@ -65,60 +46,23 @@ let blockedUntil = 0;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-function limits() {
-  return {
-    concurrency: env.LLM_MAX_CONCURRENCY > 0 ? env.LLM_MAX_CONCURRENCY : Infinity,
-    perMinute: env.LLM_REQUESTS_PER_MINUTE > 0 ? env.LLM_REQUESTS_PER_MINUTE : Infinity,
-  };
-}
-
-/** Drop start timestamps that have aged out of the rolling window. */
-function prune(now: number): void {
-  while (starts.length && now - starts[0] >= WINDOW_MS) starts.shift();
-}
-
-/**
- * How long until a slot frees up, or 0 if one is free now. Returns Infinity
- * when the block is the concurrency cap, which no amount of waiting clears —
- * that one is released by whoever is in flight, not by the clock.
- */
+/** How long until calls may go out again: 0 unless the provider sent a 429. */
 function waitFor(now: number): number {
-  const { concurrency, perMinute } = limits();
-  if (inFlight >= concurrency) return Infinity;
-  if (now < blockedUntil) return blockedUntil - now;
-  prune(now);
-  if (starts.length < perMinute) return 0;
-  return WINDOW_MS - (now - starts[0]) + WINDOW_MARGIN_MS;
+  return now < blockedUntil ? blockedUntil - now : 0;
 }
 
 /**
- * Records a provider refusal: everyone waits, and the rolling window restarts
- * from the far side of the block rather than carrying stale starts across it.
+ * Records a provider refusal: every caller waits until the block ends.
  */
 function blockAll(untilMs: number): void {
   blockedUntil = Math.max(blockedUntil, untilMs);
-  starts.length = 0;
-}
-
-function release(): void {
-  inFlight--;
-  waiting.shift()?.();
 }
 
 async function acquire(): Promise<void> {
   for (;;) {
     const delay = waitFor(Date.now());
-    if (delay === 0) {
-      inFlight++;
-      starts.push(Date.now());
-      return;
-    }
-    if (delay === Infinity) {
-      // Concurrency-bound: sleep until a running request hands its slot over.
-      await new Promise<void>((resolve) => waiting.push(resolve));
-    } else {
-      await sleep(delay);
-    }
+    if (delay === 0) return;
+    await sleep(delay);
   }
 }
 
@@ -177,7 +121,7 @@ function retryDelay(err: unknown): number {
 }
 
 /**
- * Runs `fn` under the concurrency + rate caps, retrying the two failures worth
+ * Runs `fn`, retrying the two failures worth
  * retrying — and keeping them apart, because they call for opposite responses.
  *
  * A **429** is a fact about the account: everyone must stop, and the wait is a
@@ -199,8 +143,6 @@ export async function gatedLlmCall<T>(fn: () => Promise<T>, retries = 2): Promis
   let pause = 0;
 
   for (;;) {
-    // Slept before acquiring, never while holding a slot — a caller waiting out
-    // its own backoff must not also be occupying the concurrency budget.
     if (pause) {
       await sleep(pause);
       pause = 0;
@@ -232,8 +174,6 @@ export async function gatedLlmCall<T>(fn: () => Promise<T>, retries = 2): Promis
       } else {
         throw err;
       }
-    } finally {
-      release();
     }
   }
 }

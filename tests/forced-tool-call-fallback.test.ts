@@ -76,8 +76,6 @@ beforeEach(() => {
   vi.useFakeTimers();
   mocks.getChatModelFor.mockReset();
   env.LLM_FALLBACK_MODEL = "paid/reliable-model";
-  env.LLM_MAX_CONCURRENCY = 0;
-  env.LLM_REQUESTS_PER_MINUTE = 0;
 });
 
 afterEach(() => {
