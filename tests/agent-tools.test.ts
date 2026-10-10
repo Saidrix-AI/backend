@@ -35,9 +35,10 @@ afterAll(async () => {
 describe("buildToolset", () => {
   it("gates db tools on userId and web search on searchEnabled", () => {
     expect(buildToolset({ searchEnabled: false }).size).toBe(0);
-    expect(buildToolset({ userId: userA, searchEnabled: false }).size).toBe(24);
+    expect(buildToolset({ userId: userA, searchEnabled: false }).size).toBe(25);
     const withSearch = buildToolset({ userId: userA, searchEnabled: true });
-    expect(withSearch.size).toBe(25);
+    expect(withSearch.size).toBe(26);
+    expect(withSearch.has("create_path_courses")).toBe(true);
     expect(withSearch.has("web_search")).toBe(true);
     // Bulk deletes: without them "delete all my projects" had to be one call
     // per item, which the destructive-call cap refuses — so the request could
@@ -117,7 +118,11 @@ describe("propose_courses tool", () => {
 
   it("saves an ordered path and returns the proposal payload, creating no course", async () => {
     const before = await CourseModel.countDocuments({});
-    const outcome = await run("propose_courses", { goal: "Become a Python Dev", courses: twoCourses });
+    const outcome = await run("propose_courses", {
+      goal: "Become a Python Dev",
+      breadth: "subject",
+      courses: twoCourses,
+    });
     expect(outcome.ok).toBe(true);
     expect(outcome.changed).toBeUndefined();
     expect(outcome.label).toBe("Proposed 2 courses");
@@ -128,15 +133,46 @@ describe("propose_courses tool", () => {
     expect(await CourseModel.countDocuments({})).toBe(before);
   });
 
-  it("rejects fewer than 2 or more than 5 courses", async () => {
-    const one = await run("propose_courses", { courses: twoCourses.slice(0, 1) });
-    expect(one.ok).toBe(false);
-    expect(one.modelText).toContain("Invalid arguments");
+  it("requires a breadth — the decision that fixes how many courses the path has", async () => {
+    const outcome = await run("propose_courses", { goal: "Python", courses: twoCourses });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.modelText).toContain("breadth");
+  });
 
-    const six = await run("propose_courses", {
-      courses: Array.from({ length: 6 }, (_, i) => ({ title: `C${i}`, objective: "o" })),
+  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ title: `C${i}`, objective: `o${i}` }));
+
+  it("holds a single topic to exactly one course", async () => {
+    // "Python fundamentals" came back as three courses every time.
+    const split = await run("propose_courses", { goal: "Python fundamentals", breadth: "topic", courses: twoCourses });
+    expect(split.ok).toBe(false);
+    expect(split.modelText).toContain("exactly ONE course");
+
+    const one = await run("propose_courses", {
+      goal: "Python fundamentals",
+      breadth: "topic",
+      courses: twoCourses.slice(0, 1),
     });
-    expect(six.ok).toBe(false);
+    expect(one.ok).toBe(true);
+    expect(one.label).toBe("Proposed 1 course");
+  });
+
+  it("makes a career path cover the whole syllabus (4-10 courses)", async () => {
+    const thin = await run("propose_courses", { goal: "Web developer", breadth: "career", courses: many(3) });
+    expect(thin.ok).toBe(false);
+    expect(thin.modelText).toContain("4-10");
+
+    const full = await run("propose_courses", { goal: "Web developer", breadth: "career", courses: many(8) });
+    expect(full.ok).toBe(true);
+    expect(full.proposal).toHaveLength(8);
+
+    const tooMany = await run("propose_courses", { goal: "Web developer", breadth: "career", courses: many(11) });
+    expect(tooMany.ok).toBe(false);
+  });
+
+  it("keeps a subject to 2-3 courses", async () => {
+    const four = await run("propose_courses", { goal: "Data analysis", breadth: "subject", courses: many(4) });
+    expect(four.ok).toBe(false);
+    expect(four.modelText).toContain("2-3");
   });
 
   it("rejects a course entry without an objective", async () => {

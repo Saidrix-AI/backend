@@ -5,6 +5,8 @@ import type { CourseInput } from "../services/course.service.js";
 import { getCourseDetail } from "../services/courseDetail.service.js";
 import { listPathsWithCourses } from "../services/learningPath.service.js";
 import { stripCourseBriefs } from "../services/course.projection.js";
+import { makePathCourse } from "../agents/course-maker/request.js";
+import { ApiError } from "../utils/apiError.js";
 
 export async function createCourse(req: Request, res: Response): Promise<void> {
   const course = await courseService.createCourse(req.user!.id, req.body as CourseInput);
@@ -62,4 +64,33 @@ export async function clearActive(req: Request, res: Response): Promise<void> {
 export async function listPaths(req: Request, res: Response): Promise<void> {
   const paths = await listPathsWithCourses(req.user!.id);
   res.json({ success: true, data: paths });
+}
+
+/**
+ * Steps being generated right now, per process. makePathCourse is idempotent
+ * against a course that already EXISTS, but a double-click lands both requests
+ * before either has written one — two generations, two charges, two courses.
+ */
+const creating = new Set<string>();
+
+/** "Create course" on a planned step of the Courses page. Takes a minute or two. */
+export async function createPathCourse(req: Request, res: Response): Promise<void> {
+  const userId = req.user!.id;
+  const pathId = String(req.params.pathId);
+  const order = Number(req.params.order);
+  if (!Number.isInteger(order) || order < 1) throw new ApiError(400, "Invalid step.");
+
+  const key = `${userId}:${pathId}:${order}`;
+  if (creating.has(key)) throw new ApiError(409, "This course is already being created.");
+  creating.add(key);
+  try {
+    const result = await makePathCourse(userId, pathId, order);
+    const course =
+      result.status === "exists"
+        ? { _id: result.courseId, title: result.title }
+        : { _id: String(result.made.course._id), title: result.made.course.title, lessons: result.made.course.lessons };
+    res.status(result.status === "created" ? 201 : 200).json({ success: true, data: { status: result.status, course } });
+  } finally {
+    creating.delete(key);
+  }
 }

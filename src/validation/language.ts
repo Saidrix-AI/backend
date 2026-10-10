@@ -7,12 +7,18 @@ import { z } from "zod";
 // of whatever the student typed, which quietly produced English courses for
 // students who asked in a different language.
 //
-// THE SET IS OPEN. The card offers four languages (LANGUAGE_OPTIONS) but every
-// question in the dock also carries a free-text box, and a student who types
-// "Japanese" or "Swahili" there gets a course in that language rather than
-// being silently downgraded to English. KNOWN_LANGUAGES is therefore what we
-// can *recognise*, not what we can *write* — the model writes whatever
-// resolveLanguage hands it.
+// THE SET IS OPEN FOR WRITING, CLOSED FOR SPEAKING. A student who types
+// "Swahili" into the free-text box still gets a course WRITTEN in Swahili —
+// the model writes whatever resolveLanguage hands it, and nothing downstream
+// needs a table. But the tutor has to SAY it out loud, and the speech models
+// support a fixed list (SPEECH_LANGUAGES below). A language we cannot speak is
+// one where the whole product is a document, so the intake asks again rather
+// than letting a student build a course they will meet in silence.
+//
+// KNOWN_LANGUAGES is therefore what we can *recognise*; SPEECH_LANGUAGES is
+// what we can *teach in*. The first is the wider list on purpose: recognising
+// Nepali is what lets us say "not Nepali — how about Hindi?" instead of
+// quietly slugging it and moving on.
 //
 // Banglish was removed 2026-08-07 (it is Bangla, not a separate language, and
 // offering both on one card confused everyone). "banglish" still resolves — to
@@ -38,6 +44,9 @@ export const DEFAULT_LANGUAGE_LABEL = "English";
  * The languages we can name ourselves. Wider than the card on purpose: these
  * are the ones where we know the endonym and the common misspellings, so a
  * typed answer lands on a stable code instead of a slug.
+ *
+ * Ordered by how often they are likely to be asked for, not alphabetically —
+ * `resolveLanguage` walks this list and the first alias match wins.
  */
 const KNOWN_LANGUAGES: { code: string; label: string; aliases: RegExp }[] = [
   { code: "en", label: "English", aliases: /^(en|eng|english|ingreji|ingrezi)$/i },
@@ -54,6 +63,8 @@ const KNOWN_LANGUAGES: { code: string; label: string; aliases: RegExp }[] = [
   { code: "id", label: "Bahasa Indonesia", aliases: /^(id|indonesian|bahasa|bahasa indonesia)$/i },
   { code: "ta", label: "தமிழ் (Tamil)", aliases: /^(ta|tamil|தமிழ்)$/i },
   { code: "te", label: "తెలుగు (Telugu)", aliases: /^(te|telugu|తెలుగు)$/i },
+  // Recognised but NOT speakable — kept here precisely so the intake can name
+  // it back to the student and offer its neighbours. See SPEECH_LANGUAGES.
   { code: "ne", label: "नेपाली (Nepali)", aliases: /^(ne|nepali|नेपाली)$/i },
   { code: "zh", label: "中文 (Chinese)", aliases: /^(zh|chinese|mandarin|中文|putonghua)$/i },
   { code: "ja", label: "日本語 (Japanese)", aliases: /^(ja|jp|japanese|日本語|nihongo)$/i },
@@ -61,7 +72,109 @@ const KNOWN_LANGUAGES: { code: string; label: string; aliases: RegExp }[] = [
   { code: "ru", label: "Русский (Russian)", aliases: /^(ru|russian|русский)$/i },
   { code: "tr", label: "Türkçe (Turkish)", aliases: /^(tr|turkish|turkce|türkçe)$/i },
   { code: "vi", label: "Tiếng Việt (Vietnamese)", aliases: /^(vi|vietnamese|tieng viet|tiếng việt)$/i },
+  // --- the rest of what the tutor can speak ---
+  { code: "it", label: "Italiano (Italian)", aliases: /^(it|italian|italiano)$/i },
+  { code: "nl", label: "Nederlands (Dutch)", aliases: /^(nl|dutch|nederlands|flemish)$/i },
+  { code: "pl", label: "Polski (Polish)", aliases: /^(pl|polish|polski)$/i },
+  { code: "uk", label: "Українська (Ukrainian)", aliases: /^(uk|ua|ukrainian|українська)$/i },
+  { code: "sv", label: "Svenska (Swedish)", aliases: /^(sv|se|swedish|svenska)$/i },
+  { code: "da", label: "Dansk (Danish)", aliases: /^(da|dk|danish|dansk)$/i },
+  { code: "no", label: "Norsk (Norwegian)", aliases: /^(no|nb|nn|norwegian|norsk|bokmal|bokmål)$/i },
+  { code: "fi", label: "Suomi (Finnish)", aliases: /^(fi|finnish|suomi)$/i },
+  { code: "cs", label: "Čeština (Czech)", aliases: /^(cs|cz|czech|cestina|čeština)$/i },
+  { code: "sk", label: "Slovenčina (Slovak)", aliases: /^(sk|slovak|slovencina|slovenčina)$/i },
+  { code: "hu", label: "Magyar (Hungarian)", aliases: /^(hu|hungarian|magyar)$/i },
+  { code: "ro", label: "Română (Romanian)", aliases: /^(ro|romanian|romana|română)$/i },
+  { code: "bg", label: "Български (Bulgarian)", aliases: /^(bg|bulgarian|български)$/i },
+  { code: "hr", label: "Hrvatski (Croatian)", aliases: /^(hr|croatian|hrvatski)$/i },
+  { code: "el", label: "Ελληνικά (Greek)", aliases: /^(el|gr|greek|ελληνικά|hellenic)$/i },
+  { code: "he", label: "עברית (Hebrew)", aliases: /^(he|iw|hebrew|עברית|ivrit)$/i },
+  { code: "ka", label: "ქართული (Georgian)", aliases: /^(ka|georgian|ქართული)$/i },
+  { code: "th", label: "ไทย (Thai)", aliases: /^(th|thai|ไทย)$/i },
+  { code: "ms", label: "Bahasa Melayu (Malay)", aliases: /^(ms|malay|melayu|bahasa melayu|malaysian)$/i },
+  { code: "tl", label: "Tagalog (Filipino)", aliases: /^(tl|fil|tagalog|filipino)$/i },
+  { code: "mr", label: "मराठी (Marathi)", aliases: /^(mr|marathi|मराठी)$/i },
+  { code: "gu", label: "ગુજરાતી (Gujarati)", aliases: /^(gu|gujarati|ગુજરાતી)$/i },
+  { code: "kn", label: "ಕನ್ನಡ (Kannada)", aliases: /^(kn|kannada|ಕನ್ನಡ)$/i },
+  { code: "ml", label: "മലയാളം (Malayalam)", aliases: /^(ml|malayalam|മലയാളം)$/i },
+  { code: "pa", label: "ਪੰਜਾਬੀ (Punjabi)", aliases: /^(pa|pb|punjabi|panjabi|ਪੰਜਾਬੀ)$/i },
+  { code: "or", label: "ଓଡ଼ିଆ (Odia)", aliases: /^(or|ory|odia|oriya|ଓଡ଼ିଆ)$/i },
 ];
+
+/**
+ * The languages the tutor can actually SPEAK — Cartesia Sonic-3.6's 44.
+ *
+ * This is the binding constraint on the whole product, and it is the TTS list
+ * rather than the STT one on purpose: Ink-whisper hears 99 languages, so
+ * anything Sonic can say, Ink can hear. Being able to listen in a language we
+ * cannot answer in is worth nothing.
+ *
+ * Keep in step with https://docs.cartesia.ai/build-with-cartesia/tts-models/latest
+ * — the count is asserted in tests so a silent drift here fails loudly.
+ */
+export const SPEECH_LANGUAGES: ReadonlySet<string> = new Set([
+  "en", "fr", "de", "es", "pt", "zh", "ja", "hi", "it", "ko", "nl", "pl", "ru",
+  "sv", "tr", "tl", "bg", "ro", "ar", "cs", "el", "fi", "hr", "ms", "sk", "da",
+  "ta", "uk", "hu", "no", "vi", "bn", "th", "he", "ka", "id", "te", "gu", "kn",
+  "ml", "mr", "pa", "or", "ur",
+]);
+
+/**
+ * Whether the tutor can hold a spoken class in this language.
+ *
+ * False is not a failure — it is the answer the intake gives back to the
+ * student before they spend ten minutes building a course. See
+ * services/intake.slots.ts.
+ */
+export function isSpeechSupported(code: Language): boolean {
+  return SPEECH_LANGUAGES.has(code);
+}
+
+/**
+ * Languages LiveKit's turn detector has a tuned threshold for.
+ *
+ * Everything else still works — the detector falls back to a default threshold
+ * and VAD underneath it — but the pause before the tutor answers is less
+ * precisely judged. Notably BANGLA IS NOT HERE, so the one language this
+ * product was built around gets the untuned path; that is worth knowing when a
+ * Bangla class feels like it cuts in early or waits too long.
+ *
+ * Keep in step with the plugin's languages.json.
+ */
+const TUNED_TURN_DETECTION: ReadonlySet<string> = new Set([
+  "en", "es", "fr", "de", "it", "pt", "nl", "zh", "ja", "ko", "id", "tr", "ru", "hi",
+]);
+
+export function hasTunedTurnDetection(code: Language): boolean {
+  return TUNED_TURN_DETECTION.has(code);
+}
+
+/**
+ * Speakable languages to offer someone whose choice we cannot speak.
+ *
+ * Neighbours first where we know them — a student who asked for Nepali is far
+ * better served by Hindi or Bangla than by Spanish — then the card's own four.
+ * There is no entry for a language we could not even name, and that is honest:
+ * with nothing but a slug there is no basis for guessing what is close to it.
+ */
+const NEIGHBOURS: Record<string, string[]> = {
+  ne: ["hi", "bn", "ur"],
+};
+
+export function suggestLanguages(code: Language): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of [...(NEIGHBOURS[code] ?? []), ...FALLBACK_SUGGESTIONS]) {
+    if (c === code || seen.has(c) || !isSpeechSupported(c)) continue;
+    seen.add(c);
+    out.push(languageLabel(c));
+    if (out.length === 4) break;
+  }
+  return out;
+}
+
+/** The card's own four, as the last resort for a language we know nothing about. */
+const FALLBACK_SUGGESTIONS = ["en", "bn", "hi", "es"];
 
 /**
  * The four shown on the intake's language card. Deliberately a different list

@@ -1,4 +1,5 @@
-import type OpenAI from "openai";
+import { AIMessage } from "@langchain/core/messages";
+import type { ChatOpenAI } from "@langchain/openai";
 import { describe, expect, it, vi } from "vitest";
 import {
   classifyCourseIntent,
@@ -16,11 +17,16 @@ function fakeClient(response: unknown, fail = false) {
   const create = fail
     ? vi.fn().mockRejectedValue(new Error("boom"))
     : vi.fn().mockResolvedValue(response);
-  return { client: { chat: { completions: { create } } } as unknown as OpenAI, create };
+  return { client: { invoke: create } as unknown as ChatOpenAI, create };
 }
 
 function jsonResponse(content: string) {
-  return { choices: [{ message: { content } }] };
+  return new AIMessage(content);
+}
+
+/** The prompt text sent on the first invoke() — system + user, flattened. */
+function sentPrompt(create: ReturnType<typeof vi.fn>): string {
+  return JSON.stringify(create.mock.calls[0]?.[0] ?? []);
 }
 
 function route(partial: Partial<CourseRoute> & Pick<CourseRoute, "intent">): CourseRoute {
@@ -30,7 +36,7 @@ function route(partial: Partial<CourseRoute> & Pick<CourseRoute, "intent">): Cou
 describe("forcedToolFor", () => {
   it("maps routes to the tool to force (with a prior proposal present)", () => {
     const cases: [CourseRoute, string | null][] = [
-      [route({ intent: "selection" }), "generate_course"],
+      [route({ intent: "selection" }), "create_path_courses"],
       // Every learn request goes through the intake — even a student who has
       // already stated their level still has to choose a content language.
       [route({ intent: "multi", knowledgeKnown: true }), "start_learning_intake"],
@@ -59,7 +65,7 @@ describe("forcedToolFor", () => {
   it("never forces course generation for a routine request", () => {
     for (const ready of [true, false]) {
       const forced = forcedToolFor(route({ intent: "routine", routineReady: ready }), true);
-      expect(["generate_course", "propose_courses"]).not.toContain(forced);
+      expect(["generate_course", "propose_courses", "create_path_courses"]).not.toContain(forced);
     }
   });
 });
@@ -123,16 +129,10 @@ describe("classifyCourseIntent", () => {
     const { client, create } = fakeClient(
       jsonResponse('{"intent":"multi","knowledge_known":true}'),
     );
-    const classified = await classifyCourseIntent(
-      client,
-      "fake/model",
-      [],
-      "ami data scientist hote chai",
-    );
+    const classified = await classifyCourseIntent(client, [], "ami data scientist hote chai");
     expect(classified).toEqual({ intent: "multi", knowledgeKnown: true, routineReady: false });
 
-    const req = create.mock.calls[0]![0] as { messages: { role: string; content: string }[] };
-    expect(req.messages.at(-1)?.content).toContain("ami data scientist hote chai");
+    expect(sentPrompt(create)).toContain("ami data scientist hote chai");
   });
 
   it("includes recent history in the transcript", async () => {
@@ -141,34 +141,54 @@ describe("classifyCourseIntent", () => {
     );
     await classifyCourseIntent(
       client,
-      "fake/model",
       [
         { role: "user", content: "ami data scientist hote chai" },
         { role: "assistant", content: "Pick from the cards!" },
       ],
       "prothom ta banao",
     );
-    const req = create.mock.calls[0]![0] as { messages: { role: string; content: string }[] };
-    expect(req.messages.at(-1)?.content).toContain("student: ami data scientist hote chai");
-    expect(req.messages.at(-1)?.content).toContain("assistant: Pick from the cards!");
+    expect(sentPrompt(create)).toContain("student: ami data scientist hote chai");
+    expect(sentPrompt(create)).toContain("assistant: Pick from the cards!");
   });
 
   it("parses a routine turn that already has its setup answers", async () => {
     const { client } = fakeClient(
       jsonResponse('{"intent":"routine","knowledge_known":false,"routine_ready":true}'),
     );
-    const classified = await classifyCourseIntent(client, "fake/model", [], "Study time: Night");
+    const classified = await classifyCourseIntent(client, [], "Study time: Night");
     expect(classified).toEqual({ intent: "routine", knowledgeKnown: false, routineReady: true });
   });
 
   it("returns null on malformed JSON, unknown intent, or client failure", async () => {
     const malformed = fakeClient(jsonResponse("not json"));
-    expect(await classifyCourseIntent(malformed.client, "m", [], "x")).toBeNull();
+    expect(await classifyCourseIntent(malformed.client, [], "x")).toBeNull();
 
     const unknown = fakeClient(jsonResponse('{"intent":"banana","knowledge_known":true}'));
-    expect(await classifyCourseIntent(unknown.client, "m", [], "x")).toBeNull();
+    expect(await classifyCourseIntent(unknown.client, [], "x")).toBeNull();
 
     const failing = fakeClient(null, true);
-    expect(await classifyCourseIntent(failing.client, "m", [], "x")).toBeNull();
+    expect(await classifyCourseIntent(failing.client, [], "x")).toBeNull();
+  });
+
+  /*
+   * A reasoning model does not always hand back bare JSON — it may fence it or
+   * pad it with a sentence — and the router used to depend on
+   * response_format:"json_object" to prevent that. That field is not portable
+   * across TokenRouter's models, so the parsing tolerates both now.
+   */
+  it("reads the JSON out of a fenced or padded reply", async () => {
+    const fenced = fakeClient(jsonResponse('```json\n{"intent":"single"}\n```'));
+    expect(await classifyCourseIntent(fenced.client, [], "x")).toEqual({
+      intent: "single",
+      knowledgeKnown: false,
+      routineReady: false,
+    });
+
+    const padded = fakeClient(jsonResponse('Here you go: {"intent":"other"} — hope that helps.'));
+    expect(await classifyCourseIntent(padded.client, [], "x")).toEqual({
+      intent: "other",
+      knowledgeKnown: false,
+      routineReady: false,
+    });
   });
 });

@@ -2,6 +2,9 @@ process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = "test-secret-at-least-16-chars";
 process.env.MONGODB_URI = "mongodb://127.0.0.1:27017/placeholder-overridden-in-tests";
 process.env.LLM_PROVIDER = "google";
+// The .env sets LLM_REASONING_EFFORT=none for the gateway models; tests assert
+// the per-model default, so the override must not leak in.
+process.env.LLM_REASONING_EFFORT = "";
 process.env.GOOGLE_API_KEY = "test-key";
 // Force the RAG layer OFF in tests regardless of a populated .env, so unit tests
 // stay deterministic and never make real Pinecone/embedding network calls.
@@ -27,6 +30,14 @@ process.env.LECTURE_RESOURCES_ENABLED = "false";
 // skips when no browser is installed.
 process.env.LECTURE_SVG_RENDER_ENABLED = "false";
 process.env.LECTURE_SVG_VISION_ENABLED = "false";
+// The provider throttle OFF in tests, same "ignore a populated .env" reason and
+// the sharpest one: agents/shared/llmGate.ts is process-global and sleeps to
+// stay under the cap, so a real LLM_REQUESTS_PER_MINUTE from .env makes a suite
+// that issues dozens of FAKE calls wait out real minutes between them. With a
+// 10/min .env value, lecture-maker.test.ts went from 3s to over five minutes.
+// Nothing here talks to a provider, so there is no rate to protect.
+process.env.LLM_MAX_CONCURRENCY = "0";
+process.env.LLM_REQUESTS_PER_MINUTE = "0";
 // Billing OFF by default, for the same "ignore a populated .env" reason. With
 // real LEMONSQUEEZY_* keys present, `isBillingEnabled()` is true and the paywall
 // answers 402 to every feature route — so a developer with billing configured

@@ -18,6 +18,7 @@
     "ingest:knowledge": "tsx scripts/ingest-knowledge.ts",
     "svg:audit": "tsx scripts/svg-audit.ts",
     "svg:metrics": "tsx scripts/gen-font-metrics.ts",
+    "mermaid:fixture": "node scripts/dump-mermaid-fixture.mjs",
     "svg:e2e": "tsx scripts/svg-e2e.ts",
     "icons:backfill": "tsx scripts/backfill-icons.ts",
     "migrate:active-paths": "node dist/scripts/migrate-active-paths.js",

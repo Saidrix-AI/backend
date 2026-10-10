@@ -92,9 +92,10 @@ beforeAll(async () => {
     lessonId: examLesson,
     title: "Exam Lecture",
     outline: [{ id: 1, title: "Intro", duration: "3:00" }],
-    blocks: [
-      { id: "b1", topicId: 1, type: "paragraph", text: "Body text." },
-      { id: "b2", topicId: 1, type: "quiz", title: "Check", questions: QUESTIONS },
+    version: 3,
+    sections: [
+      { id: "s1", topicId: 1, title: "Intro", kind: "theory", blocks: [{ id: "b1", type: "paragraph", text: "Body text." }] },
+      { id: "s2", topicId: 1, title: "Check", kind: "theory", blocks: [{ id: "b2", type: "quiz", title: "Check", questions: QUESTIONS }] },
     ],
   });
 
@@ -103,12 +104,14 @@ beforeAll(async () => {
     lessonId: untaggedLesson,
     title: "Untagged Lecture",
     outline: [{ id: 1, title: "Intro", duration: "1:00" }],
-    blocks: [
+    version: 3,
+    sections: [
       {
-        id: "u1",
+        id: "s1",
         topicId: 1,
-        type: "quiz",
-        questions: [{ question: "2 + 2?", options: ["3", "4"], correctIndex: 1 }],
+        title: "Check",
+        kind: "theory",
+        blocks: [{ id: "u1", type: "quiz", questions: [{ question: "2 + 2?", options: ["3", "4"], correctIndex: 1 }] }],
       },
     ],
   });
@@ -227,7 +230,8 @@ describe("grading", () => {
       lessonId: noQuizLesson,
       title: "No Quiz",
       outline: [],
-      blocks: [{ id: "x", type: "paragraph", text: "nothing here" }],
+      version: 3,
+      sections: [{ id: "s1", topicId: 1, title: "x", kind: "theory", blocks: [{ id: "x", type: "paragraph", text: "nothing here" }] }],
     });
     const res = await request(app).post(`/api/lectures/${noQuizLesson}/quiz`).set(auth()).send({ answers: [0] });
     expect(res.status).toBe(404);

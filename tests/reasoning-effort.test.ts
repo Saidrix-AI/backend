@@ -1,9 +1,7 @@
-import type OpenAI from "openai";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { reasoningParams } from "../src/agents/llm.js";
-import { runForcedToolCall } from "../src/agents/shared/forcedToolCall.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { getChatModelFor, reasoningParams } from "../src/agents/llm.js";
 import { env } from "../src/config/env.js";
-import { toolCallResponse } from "./helpers/fakeLlm.js";
+import { boundTool, fakeDeps, toolCallResponse } from "./helpers/fakeLlm.js";
 
 /*
  * Regression guard for the 2026-08-06 outage: on TokenRouter, gpt-5.x refuses
@@ -16,10 +14,25 @@ import { toolCallResponse } from "./helpers/fakeLlm.js";
  */
 
 const original = env.LLM_REASONING_EFFORT;
+const originalProvider = env.LLM_PROVIDER;
+const originalKey = env.OPENAI_API_KEY;
 
 afterEach(() => {
   env.LLM_REASONING_EFFORT = original;
+  env.LLM_PROVIDER = originalProvider;
+  env.OPENAI_API_KEY = originalKey;
 });
+
+/**
+ * tests/setup.ts forces LLM_PROVIDER=google so no test can reach a real
+ * provider by accident, and getChatModelFor returns null for it. These
+ * assertions are about how the model is BUILT, so they need a provider that
+ * builds one — openai, which needs no compat base URL or shared key.
+ */
+function withOpenAIProvider(): void {
+  env.LLM_PROVIDER = "openai";
+  env.OPENAI_API_KEY = "test-key";
+}
 
 describe("reasoningParams", () => {
   it("sends none for the dotted gpt-5.N family, namespaced or bare", () => {
@@ -44,49 +57,49 @@ describe("reasoningParams", () => {
   });
 });
 
-describe("forced tool calls carry the effort", () => {
-  const TOOL: OpenAI.Chat.ChatCompletionFunctionTool = {
-    type: "function",
-    function: {
-      name: "emit_thing",
-      description: "Emit a thing.",
-      parameters: { type: "object", required: ["value"], properties: { value: { type: "string" } } },
-    },
-  };
-
-  async function runWithModel(model: string) {
-    const create = vi.fn().mockResolvedValueOnce(toolCallResponse("emit_thing", { value: "ok" }));
-    const client = { chat: { completions: { create } } } as unknown as OpenAI;
-    await runForcedToolCall({
-      deps: { client, model },
-      tool: TOOL,
-      system: "s",
-      user: "u",
-      sizeHint: "smaller",
-      maxTokens: 256,
-      label: "Test generation",
-      parse: (raw: unknown) => ({ success: true as const, data: (raw as { value: string }).value }),
-    });
-    return create.mock.calls[0]?.[0] as Record<string, unknown>;
-  }
-
-  it("includes reasoning_effort alongside the tool for gpt-5.x", async () => {
-    const body = await runWithModel("openai/gpt-5.6-luna");
-    expect(body.reasoning_effort).toBe("none");
-    expect(body.tools).toHaveLength(1);
+/*
+ * The shared runner builds its model through getChatModelFor, which is where
+ * the effort is now attached — as modelKwargs on the LangChain model rather
+ * than a field the runner spreads into a hand-built request body. Asserting on
+ * the model is the same guard one layer up: every forced tool call in the
+ * project goes through this factory.
+ */
+describe("the shared runner's model carries the effort", () => {
+  it("includes reasoning_effort for gpt-5.x", () => {
+    withOpenAIProvider();
+    expect(getChatModelFor("openai/gpt-5.6-luna", 256)?.modelKwargs).toEqual({ reasoning_effort: "none" });
   });
 
-  it("omits the field for models that would reject it", async () => {
-    const body = await runWithModel("openai/gpt-4o-mini");
-    expect(body).not.toHaveProperty("reasoning_effort");
+  it("omits the field for models that would reject it", () => {
+    withOpenAIProvider();
+    expect(getChatModelFor("openai/gpt-4o-mini", 256)?.modelKwargs ?? {}).not.toHaveProperty("reasoning_effort");
+  });
+
+  /*
+   * LangChain's default is six automatic retries. shared/llmGate.ts exists
+   * because this project's gateway counts failed attempts against the quota,
+   * so SDK-level retries would spend a whole rate window on one call and the
+   * gate would never see the 429 it is meant to back off from.
+   */
+  it("leaves retrying to the rate gate", () => {
+    withOpenAIProvider();
+    // maxRetries lives on the model's AsyncCaller and is not a public field.
+    const chat = getChatModelFor("openai/gpt-4o-mini") as unknown as { caller: { maxRetries: number } };
+    expect(chat.caller.maxRetries).toBe(1);
   });
 });
 
-/* The course outline predates the shared runner and builds its own request. */
-describe("course outline carries the effort", () => {
-  it("includes reasoning_effort alongside emit_course for gpt-5.x", async () => {
+/*
+ * The course outline used to build its own request and needed its own copy of
+ * this assertion. It now goes through runForcedToolCall like every other agent,
+ * so the model-level checks above cover it — what is worth pinning instead is
+ * that it really does route through the shared runner, since that is the only
+ * thing keeping the two in step.
+ */
+describe("course outline goes through the shared runner", () => {
+  it("emits through runForcedToolCall rather than its own request", async () => {
     const { generateCoursePayload } = await import("../src/agents/course-maker/generator.js");
-    const create = vi.fn().mockResolvedValueOnce(
+    const { deps, bindTools } = fakeDeps(
       toolCallResponse("emit_course", {
         title: "T",
         description: "d",
@@ -94,15 +107,11 @@ describe("course outline carries the effort", () => {
         chapters: [{ title: "C", summary: "s" }],
       }),
     );
-    const client = { chat: { completions: { create } } } as unknown as OpenAI;
-    await generateCoursePayload(
-      { objective: "Python", withProjects: false },
-      [],
-      { client, model: "openai/gpt-5.6-luna" },
-    ).catch(() => undefined); // the canned payload may not satisfy zod; the request is what matters
+    // The canned payload may not satisfy zod; the call shape is what matters.
+    await generateCoursePayload({ objective: "Python", withProjects: false }, [], deps).catch(
+      () => undefined,
+    );
 
-    const body = create.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(body.reasoning_effort).toBe("none");
-    expect(body.tools).toHaveLength(1);
+    expect(boundTool(bindTools).function.name).toBe("emit_course");
   });
 });

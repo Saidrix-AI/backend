@@ -20,7 +20,12 @@ const outlineItemSchema = new Schema(
 const lectureSchema = new Schema(
   {
     lessonId: { type: String, required: true, unique: true },
-    version: { type: Number, default: 1 },
+    /**
+     * Format version. Only 3 (sections) is read; anything older is treated as
+     * absent and regenerated on next open (scripts/migrate-lectures-v3.mjs
+     * deletes them outright).
+     */
+    version: { type: Number, default: 3 },
     /** Open set, not an enum — see course.model.ts and validation/language.ts. */
     language: { type: String, default: DEFAULT_LANGUAGE },
     /**
@@ -36,7 +41,13 @@ const lectureSchema = new Schema(
     },
     title: { type: String, required: true, trim: true },
     outline: { type: [outlineItemSchema], default: [] },
-    blocks: { type: [Schema.Types.Mixed], default: [] },
+    /**
+     * The lecture itself: sections in teaching order, each tagged theory /
+     * practical / canvas, holding the page blocks and the tutor's (server-only)
+     * teaching instructions. Shape: agents/lecture-maker/sections.ts. Mixed
+     * because zod validates the whole document at authoring time.
+     */
+    sections: { type: [Schema.Types.Mixed], default: [] },
   },
   { timestamps: true },
 );

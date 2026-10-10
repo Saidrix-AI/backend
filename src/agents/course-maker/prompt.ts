@@ -15,13 +15,16 @@ Coverage rules:
 - Cover ONLY this subject's own ground — take the student to real working competence in THIS subject, but teach nothing outside it. Do NOT teach prerequisites or adjacent subjects: an HTML course does not teach CSS or JavaScript; a JavaScript course does not teach HTML or CSS; a Pandas course does not teach Python basics. Assume the student learns those separately (or already has).
 - Plan 6 to 9 chapters based on what THIS subject genuinely needs — fewer is completely fine; never pad with filler. The WHOLE course must total FEWER THAN 60 lessons, so each chapter holds only a handful of lessons — spend them on the topics that matter most and keep minor topics tight.
 - Order chapters foundational to advanced, each one depending only on what came before it.
+- NEVER plan a chapter about installing or setting up tools (installers, editors, terminals, virtual environments). If the student needs setup, that is ONE lesson, given in \`setupLesson\` — nothing more. Chapter 1 starts with the subject itself.
 - When a multi-course path boundary is given: treat the earlier courses' ground as prerequisites the student already holds — do NOT re-teach it; start at the first concept this course genuinely owns. Do NOT teach anything the later courses are set to cover. Stay strictly within this course's own slice.
 - Every chapter needs a concrete title and a brief of 2-4 sentences naming the actual ground it must cover — specific enough that the writer expanding it into lessons never has to guess. "Functions, parameters, return values, scope and common mistakes" is a brief; "Learn about functions" is not.
 - Chapters must not overlap. If two chapters would teach the same thing, merge them or split the subject differently.
 - Respect the requested level (default Beginner): Beginner starts from zero; Advanced assumes the fundamentals.
 - When prior knowledge is given, calibrate to it: skip ground the student already holds, start at the first genuinely new concept, and give their gaps their own chapters.
 - estimatedHours: realistic total study time for the whole course.
+- whyTake and outcomes are written FOR THIS STUDENT, using what you were told about them. whyTake answers "is this for me?" — the problem it solves for them and what changes once they can do it, in 2-4 sentences addressed to them. outcomes are 4-8 things they will be able to DO, each starting with a verb and concrete enough that they could tell whether it is true of them yet. Neither is a restatement of desc or of the chapter list.
 - quizzes: one short checkpoint quiz per chapter, title only (like "Foundations Checkpoint").
+- setupLesson: fill it ONLY when you are told the student has no working setup. One beginner lesson: install the language/runtime and one code editor, then run a first tiny program. Nothing else in it — no virtual environments, no terminal tutorial, no configuration beyond the defaults.
 - Do NOT invent any ids (no lessonId, no quizId) — the system assigns them.
 - icon: if this course is about a specific technology with a well-known logo, use its brand name — ${BRAND_ICON_NAMES.join(", ")}. The brand mark renders in that technology's own colours, so pick one ONLY when the course really is about it. Otherwise pick the most topical generic icon from ${ICON_NAMES.join(", ")} (chart for data/analytics, brain for ML/AI, code for general programming, database for SQL/data modelling, globe for web, cloud for cloud platforms). thumb: one of dark, gray, purple, green (ignored when a brand icon is used).
 - Write all titles and text in the language the LANGUAGE line gives you.
@@ -78,9 +81,15 @@ function intakeLines(brief: CourseBrief): string[] {
     lines.push(`Do NOT re-teach (they have already proven it): ${brief.skip.join(", ")}`);
   }
   if (brief.needsSetupLesson) {
+    // Read by the outline AND by every chapter writer (profileLines is shared),
+    // so it must say the same true thing to both. It used to say "the FIRST
+    // chapter must open with an installation lesson" — the outline turned that
+    // into a whole setup chapter and its writer filled a chapter's budget:
+    // ten lessons of install, terminal, REPL and virtual environments.
     lines.push(
-      "This student has no working setup yet. The FIRST chapter must open with an installation lesson " +
-        "covering what to install and how to check it worked, before any concept is taught.",
+      "This student has no working setup yet. Installation is exactly ONE short beginner lesson — the " +
+        "outline's `setupLesson` (install the runtime and one editor, run a first program). It is placed " +
+        "first in chapter 1 automatically. Never plan or write any other installation or setup chapter or lesson.",
     );
   }
   if (brief.dailyMinutes) {
@@ -168,7 +177,8 @@ Rules:
 - Break the chapter into 2 to 4 modules, in teaching order. Keep the chapter within the lesson budget you are given (a hard maximum is stated) — do NOT exceed it.
 - VARY THE DEPTH: spend more lessons on the chapter's core/important topics and give minor or easy topics just one tight lesson each. Do not split trivial ideas into many lessons to fill space.
 - Every lesson is ONE concrete, teachable thing with a specific title, like "Variables & Assignment" or "Handling a 404 Response" — never a vague filler like "Basics", "More concepts" or "Advanced topics".
-- Cover the genuinely necessary parts (setup, key syntax, common mistakes) but do not pad — if a lesson is not core to this chapter's brief, leave it out.
+- Cover the genuinely necessary parts (key syntax, common mistakes) but do not pad — if a lesson is not core to this chapter's brief, leave it out.
+- NEVER write a lesson about installing or setting up tools (installers, editors, terminals, virtual environments). Installation, when the student needs it, is one separate lesson that is added automatically.
 - summary (chapter): 2-3 sentences on what it covers and why it matters at this point in the course. Concrete, not marketing language.
 - outcomes: everything the student can DO afterwards, each starting with a verb ("Write a function that…", "Explain when to use…"). Never vague ("Understand the basics").
 - Module summary: one sentence. Lesson summary: one sentence saying what that single lesson teaches — specific enough that two lessons never read the same.

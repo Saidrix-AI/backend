@@ -29,10 +29,16 @@ export const COLOR_TOKENS = [
  */
 export { ICON_NAMES };
 
+/**
+ * Fields every block may carry. Placement only: which topic and which section
+ * it sits in, both stamped by the server. The old `caption`, `sideText` and
+ * per-block `demo` strings are gone — they were where filler ("tip:",
+ * "remember…") lived. Explanation belongs to the tutor (section.tutor), and a
+ * demonstration is a property of a section, not of a block.
+ */
 const baseBlockFields = {
   topicId: z.number().int().optional(),
-  caption: z.string().optional(),
-  sideText: z.string().optional(),
+  sectionId: z.string().trim().min(1).max(40).optional(),
 };
 
 const headingBlockSchema = z.object({
@@ -56,18 +62,17 @@ const listBlockSchema = z.object({
   ...baseBlockFields,
 });
 
-const calloutBlockSchema = z.object({
-  type: z.literal("callout"),
-  text: z.string().trim().min(1),
-  tone: z.enum(["info", "success", "warning"]).catch("info").optional(),
-  icon: z.enum(ICON_NAMES).catch("info").optional(),
-  ...baseBlockFields,
-});
-
 const codeBlockSchema = z.object({
   type: z.literal("code"),
   language: z.string().optional(),
-  code: z.string().min(1),
+  /**
+   * Capped so a block stays a teaching example. The live tutor can turn one of
+   * these into a demonstration it types out line by line while talking, and the
+   * demo route itself refuses more than 8000 characters across a whole
+   * walkthrough — a single block longer than this could not seed one, and was
+   * not going to be read aloud usefully either.
+   */
+  code: z.string().min(1).max(3000),
   ...baseBlockFields,
 });
 
@@ -88,34 +93,6 @@ const chartBlockSchema = z.object({
       .min(1)
       .max(5),
   }),
-  ...baseBlockFields,
-});
-
-const diagramNodeSchema = z.object({
-  id: z.string().min(1),
-  label: z.string().min(1),
-  sublabel: z.string().optional(),
-  tag: z.string().optional(),
-  icon: z.enum(ICON_NAMES).catch("info").optional(),
-  color: z.enum(COLOR_TOKENS).catch("blue").optional(),
-  shape: z.enum(["box", "iconBox", "circle", "pill"]).catch("iconBox").optional(),
-});
-
-const diagramBlockSchema = z.object({
-  type: z.literal("diagram"),
-  layout: z.enum(["flow", "tree", "cycle", "timeline", "grid"]),
-  direction: z.enum(["horizontal", "vertical"]).catch("horizontal").optional(),
-  nodes: z.array(diagramNodeSchema).min(1).max(9),
-  edges: z
-    .array(
-      z.object({
-        from: z.string().min(1),
-        to: z.string().min(1),
-        label: z.string().optional(),
-        style: z.enum(["solid", "dashed"]).catch("solid").optional(),
-      }),
-    )
-    .optional(),
   ...baseBlockFields,
 });
 
@@ -259,10 +236,8 @@ export const easyBlockSchema = z.discriminatedUnion("type", [
   headingBlockSchema,
   paragraphBlockSchema,
   listBlockSchema,
-  calloutBlockSchema,
   codeBlockSchema,
   chartBlockSchema,
-  diagramBlockSchema,
   mermaidBlockSchema,
   treeBlockSchema,
   tableBlockSchema,
@@ -376,21 +351,6 @@ export const outlineItemSchema = z.object({
   duration: z.string().regex(/^\d+:\d{2}$/),
 });
 export type OutlineItem = z.infer<typeof outlineItemSchema>;
-
-/**
- * Whole-document check run after assembly — failure means a pipeline bug.
- *
- * 17 outline topics, not 16: the PLANNER is still capped at 16
- * (`lecturePlanSchema`), and the resources step appends one more topic after
- * the plan has been executed. Leaving both at 16 would make a 16-topic lecture
- * fail here — turning the one step that must never sink a lecture into the only
- * thing that could.
- */
-export const assembledLectureSchema = z.object({
-  title: z.string().trim().min(1),
-  outline: z.array(outlineItemSchema).min(2).max(17),
-  blocks: z.array(finalBlockSchema).min(1),
-});
 
 // --- Lesson blueprint (analyst output) ---
 
@@ -803,573 +763,13 @@ export const emitSetupBlueprintTool: OpenAI.Chat.ChatCompletionFunctionTool = {
   },
 };
 
-// --- Planner output ---
-
-// `diagram` is intentionally absent: Mermaid supersedes the five preset layouts
-// and keeping both would make the planner dither between two ways to draw the
-// same thing. The diagram schema and renderer stay for lectures cached before
-// this change; new plans use mermaid/tree/chart instead.
-export const BLOCK_PLAN_TYPES = [
-  "heading", "paragraph", "list", "callout", "code", "table", "math", "chart", "mermaid", "tree", "quiz", "svg",
-] as const;
-
-/**
- * Hard cap, not a runaway guard: svg is now a last resort. Library-backed
- * visuals (mermaid/tree/chart) render for a fraction of the cost and lay
- * themselves out, so a lecture rarely needs a hand-drawn svg — and the few it
- * does are worth a strong model. Exceeding this fails the plan.
- */
-export const MAX_SVG_BLOCKS = 3;
-
-/**
- * Depth floor, averaged across the outline rather than applied per topic: an
- * intro or a recap is legitimately two blocks, while a concept topic needs
- * heading + explanation + example + mistake. Set at 3 so an 8-topic lecture
- * must reach 24 blocks — the low end of the 25-60 the prompt asks for.
- */
-export const MIN_BLOCKS_PER_TOPIC = 3;
-
-/**
- * There is no longer a per-topic visual quota. Requiring one made the planner
- * bolt a diagram onto motivation, definition and recap topics purely to satisfy
- * the validator, which cost the student attention and taught nothing. Where a
- * picture genuinely helps is decided upstream by the lesson analyst's `visuals`
- * list, and the planner is told to follow it rather than fill a quota.
- */
-
-export const plannedBlockSchema = z.object({
-  type: z.enum(BLOCK_PLAN_TYPES),
-  topicId: z.number().int().min(1),
-  // What this block must teach/show, including a narration hint for visuals.
-  brief: z.string().trim().min(1),
-  // svg only: request SMIL animation.
-  animated: z.boolean().optional(),
-});
-export type PlannedBlock = z.infer<typeof plannedBlockSchema>;
-
-/**
- * The structural rules both lanes share: every block belongs to a real outline
- * topic, and every outline topic gets blocks. Factored out so the setup plan
- * cannot drift from the concept plan on the two rules that make assembly safe —
- * index.ts indexes topics by id and would throw on a dangling one.
- */
-function refineTopicCoverage(
-  plan: { outline: { id: number }[]; blocks: { topicId: number }[] },
-  ctx: z.RefinementCtx,
-): void {
-  const ids = new Set(plan.outline.map((t) => t.id));
-  plan.blocks.forEach((b, i) => {
-    if (!ids.has(b.topicId)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["blocks", i, "topicId"],
-        message: `topicId ${b.topicId} is not an outline topic id`,
-      });
-    }
-  });
-  for (const id of ids) {
-    if (!plan.blocks.some((b) => b.topicId === id)) {
-      ctx.addIssue({ code: "custom", path: ["outline"], message: `outline topic ${id} has no blocks` });
-    }
-  }
-}
-
-export const lecturePlanSchema = z
-  .object({
-    title: z.string().trim().min(1),
-    outline: z.array(outlineItemSchema).min(2).max(16),
-    // Sanity ceiling only. The planner emits one-line briefs, and the content
-    // itself is written by one parallel call per topic, so a long lecture never
-    // has to fit in a single response.
-    blocks: z.array(plannedBlockSchema).min(6).max(120),
-  })
-  .superRefine((plan, ctx) => {
-    refineTopicCoverage(plan, ctx);
-    // Depth floor. The planner reliably undershoots: asked for 25-60 blocks it
-    // returned 18 across 8 topics, several of them a single paragraph — which
-    // introduces an idea rather than teaching it. Prompt wording did not move
-    // it, so, like the rules above, it is a parse failure the repair round fixes.
-    const minBlocks = plan.outline.length * MIN_BLOCKS_PER_TOPIC;
-    if (plan.blocks.length < minBlocks) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["blocks"],
-        message:
-          `only ${plan.blocks.length} blocks for ${plan.outline.length} outline topics — this lecture is too thin ` +
-          `to teach. Plan at least ${minBlocks}: give every concept topic its own heading, an explanation, the ` +
-          `worked example and the common mistake. Keep the same outline; add the missing blocks.`,
-      });
-    }
-    // Each topic must be more than a single block — a lone paragraph under a
-    // topic title is an outline entry pretending to be teaching.
-    for (const t of plan.outline) {
-      const count = plan.blocks.filter((b) => b.topicId === t.id).length;
-      if (count === 1 && t.id !== plan.outline[plan.outline.length - 1]?.id) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["blocks"],
-          message: `outline topic ${t.id} ("${t.title}") has only one block — give it a heading plus real content`,
-        });
-      }
-    }
-    // ONE dedicated quiz, and it closes the lecture. The old prompt asked for a
-    // quiz "ending most topics", which broke the teaching arc into a series of
-    // tests; the arc now runs intro → concepts → recap → check your
-    // understanding. A cheap model will not hold that from the prompt alone, so
-    // — like the topicId rules above — it is a parse failure the repair round fixes.
-    const quizIndexes = plan.blocks.flatMap((b, i) => (b.type === "quiz" ? [i] : []));
-    if (quizIndexes.length !== 1) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["blocks"],
-        message:
-          `expected exactly one quiz block (got ${quizIndexes.length}) — the lecture ends with a single ` +
-          `dedicated quiz, and no topic carries its own checkpoint quiz`,
-      });
-    } else {
-      const quizIndex = quizIndexes[0]!;
-      if (quizIndex !== plan.blocks.length - 1) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["blocks", quizIndex],
-          message: "the quiz must be the very last block of the lecture — nothing may follow it",
-        });
-      }
-      const lastTopicId = plan.outline[plan.outline.length - 1]?.id;
-      if (plan.blocks[quizIndex]!.topicId !== lastTopicId) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["blocks", quizIndex, "topicId"],
-          message: `the quiz must belong to the final outline topic (${lastTopicId})`,
-        });
-      }
-    }
-    // svg is a last resort — expensive to draw and reserved for custom spatial
-    // ideas no library expresses. The rest of the lecture's visuals are
-    // mermaid/tree/chart, which are near-free.
-    if (plan.blocks.filter((b) => b.type === "svg").length > MAX_SVG_BLOCKS) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["blocks"],
-        message: `at most ${MAX_SVG_BLOCKS} svg blocks per lecture — use mermaid, tree or chart for the rest`,
-      });
-    }
-  });
-export type LecturePlan = z.infer<typeof lecturePlanSchema>;
-
-/**
- * The setup lane's palette. No `quiz` (the lecture closes on a checklist, not an
- * exam), no `svg` (an install guide's one useful picture is a flow, which
- * mermaid draws for free), no `chart`, `tree` or `math` (nothing here is
- * numeric, hierarchical or algebraic — offering them only invites decoration).
- */
-export const SETUP_BLOCK_PLAN_TYPES = [
-  "heading", "paragraph", "list", "callout", "code", "table", "mermaid", "downloads", "checklist",
-] as const;
-
-export const setupPlannedBlockSchema = z.object({
-  type: z.enum(SETUP_BLOCK_PLAN_TYPES),
-  topicId: z.number().int().min(1),
-  brief: z.string().trim().min(1),
-});
-export type SetupPlannedBlock = z.infer<typeof setupPlannedBlockSchema>;
-
-/** Either lane's plan entry — what index.ts and the workers actually handle. */
-export type AnyPlannedBlock = PlannedBlock | SetupPlannedBlock;
-
-/**
- * Setup topics are legitimately step-list shaped — "Run the installer" can be a
- * heading plus one numbered list — so the floor is lower than the concept lane's
- * MIN_BLOCKS_PER_TOPIC of 3.
- */
-export const MIN_SETUP_BLOCKS_PER_TOPIC = 2;
-
-export const setupLecturePlanSchema = z
-  .object({
-    title: z.string().trim().min(1),
-    outline: z.array(outlineItemSchema).min(2).max(16),
-    blocks: z.array(setupPlannedBlockSchema).min(6).max(120),
-  })
-  .superRefine((plan, ctx) => {
-    refineTopicCoverage(plan, ctx);
-
-    const minBlocks = plan.outline.length * MIN_SETUP_BLOCKS_PER_TOPIC;
-    if (plan.blocks.length < minBlocks) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["blocks"],
-        message:
-          `only ${plan.blocks.length} blocks for ${plan.outline.length} outline topics — this guide is too thin ` +
-          `to follow. Plan at least ${minBlocks}: give every stage its own heading and the numbered steps that ` +
-          `carry it out. Keep the same outline; add the missing blocks.`,
-      });
-    }
-
-    // ONE downloads block, and it comes BEFORE the install steps. The links are
-    // filled in by the server from a live search, so the planner is only
-    // choosing where the section sits — and a download section placed after the
-    // installation instructions is a guide the student cannot start.
-    const downloadIndexes = plan.blocks.flatMap((b, i) => (b.type === "downloads" ? [i] : []));
-    if (downloadIndexes.length !== 1) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["blocks"],
-        message:
-          `expected exactly one downloads block (got ${downloadIndexes.length}) — the guide has a single ` +
-          `download section, and it is where the student gets the software`,
-      });
-    } else if (downloadIndexes[0]! >= Math.floor(plan.blocks.length / 2)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["blocks", downloadIndexes[0]!],
-        message:
-          "the downloads block must come in the FIRST HALF of the guide, before the installation steps — " +
-          "the student cannot install something they have not downloaded yet",
-      });
-    }
-
-    // The guide ends by proving it worked, not by asserting it.
-    const last = plan.blocks[plan.blocks.length - 1];
-    if (last?.type !== "checklist") {
-      ctx.addIssue({
-        code: "custom",
-        path: ["blocks", plan.blocks.length - 1],
-        message:
-          `the last block must be a checklist (got ${last?.type ?? "nothing"}) — a setup lesson closes with the ` +
-          `verification checklist the student ticks off, and never with a quiz`,
-      });
-    }
-    if (plan.blocks.filter((b) => b.type === "checklist").length !== 1) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["blocks"],
-        message: "exactly one checklist block, and it is the last one",
-      });
-    }
-
-    // Every install goes wrong for somebody. A guide with no troubleshooting
-    // section abandons exactly the students who most needed it.
-    if (!plan.blocks.some((b) => b.type === "table")) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["blocks"],
-        message:
-          "plan a table block for troubleshooting — columns Symptom | Why it happens | Fix, one row per way " +
-          "this install actually fails",
-      });
-    }
-  });
-export type SetupLecturePlan = z.infer<typeof setupLecturePlanSchema>;
-
-export const emitSetupLecturePlanTool: OpenAI.Chat.ChatCompletionFunctionTool = {
-  type: "function",
-  function: {
-    name: "emit_setup_plan",
-    description: "Emit the complete setup-guide plan. Call exactly once with the full structure.",
-    parameters: {
-      type: "object",
-      required: ["title", "outline", "blocks"],
-      properties: {
-        title: { type: "string", description: "Guide title shown in the classroom top bar" },
-        outline: {
-          type: "array",
-          description: "Every ordered stage of the setup (usually 5-9)",
-          items: {
-            type: "object",
-            required: ["id", "title", "duration"],
-            properties: {
-              id: { type: "integer", description: "1-based topic id" },
-              title: { type: "string" },
-              duration: { type: "string", pattern: "^\\d+:\\d{2}$", description: "m:ss estimate" },
-            },
-          },
-        },
-        blocks: {
-          type: "array",
-          description:
-            "Ordered plan of every block. Exactly one downloads block, in the first half. Exactly one checklist block, and it is the last entry. At least one table, for troubleshooting. No quiz.",
-          items: {
-            type: "object",
-            required: ["type", "topicId", "brief"],
-            properties: {
-              type: { type: "string", enum: [...SETUP_BLOCK_PLAN_TYPES] },
-              topicId: { type: "integer", description: "Outline topic this block belongs to" },
-              brief: {
-                type: "string",
-                description:
-                  "What the block must say or show. For the downloads block just say which tool's downloads it is — the links themselves are found by the system, not by you.",
-              },
-            },
-          },
-        },
-      },
-    },
-  },
-};
-
 // --- Worker emissions ---
 
-export const topicBlocksEmissionSchema = z.object({ blocks: z.array(easyBlockSchema).min(1) });
 export const svgEmissionSchema = z.object({
   svg: z.string().min(20),
   alt: z.string().trim().min(1),
   caption: z.string().optional(),
 });
-
-// --- Forced tools (hand-written JSON Schema; the zod above is the enforcement) ---
-
-export const emitLecturePlanTool: OpenAI.Chat.ChatCompletionFunctionTool = {
-  type: "function",
-  function: {
-    name: "emit_lecture_plan",
-    description: "Emit the complete lecture plan. Call exactly once with the full structure.",
-    parameters: {
-      type: "object",
-      required: ["title", "outline", "blocks"],
-      properties: {
-        title: { type: "string", description: "Lecture title shown in the classroom top bar" },
-        outline: {
-          type: "array",
-          description: "Every ordered lecture topic the lesson needs (usually 5-12)",
-          items: {
-            type: "object",
-            required: ["id", "title", "duration"],
-            properties: {
-              id: { type: "integer", description: "1-based topic id" },
-              title: { type: "string" },
-              duration: { type: "string", pattern: "^\\d+:\\d{2}$", description: "m:ss estimate" },
-            },
-          },
-        },
-        blocks: {
-          type: "array",
-          description:
-            "Ordered plan of every content block the lesson needs (typically 20-60). Exactly one quiz block, and it is the last entry.",
-          items: {
-            type: "object",
-            required: ["type", "topicId", "brief"],
-            properties: {
-              type: { type: "string", enum: [...BLOCK_PLAN_TYPES] },
-              topicId: { type: "integer", description: "Outline topic this block belongs to" },
-              brief: {
-                type: "string",
-                description: "What the block must teach/show; for visuals include what the alt/narration should convey",
-              },
-              animated: { type: "boolean", description: "svg only: true when the diagram should be SMIL-animated" },
-            },
-          },
-        },
-      },
-    },
-  },
-};
-
-export const emitTopicBlocksTool: OpenAI.Chat.ChatCompletionFunctionTool = {
-  type: "function",
-  function: {
-    name: "emit_topic_blocks",
-    description:
-      "Emit the final content blocks for this topic, in the planned order — exactly as many blocks as planned. Call exactly once.",
-    parameters: {
-      type: "object",
-      required: ["blocks"],
-      properties: {
-        blocks: {
-          type: "array",
-          items: {
-            type: "object",
-            required: ["type"],
-            properties: {
-              type: {
-                type: "string",
-                enum: ["heading", "paragraph", "list", "callout", "code", "table", "math", "chart", "mermaid", "tree", "quiz"],
-              },
-              text: { type: "string", description: "heading/paragraph/callout body" },
-              alt: { type: "string", description: "mermaid/tree only: narration + accessibility description" },
-              columns: { type: "array", items: { type: "string" }, description: "table only: 1-6 header labels" },
-              rows: {
-                type: "array",
-                description: "table only: each row an array of cell strings, one per column",
-                items: { type: "array", items: { type: "string" } },
-              },
-              tex: { type: "string", description: "math only: raw LaTeX math, no surrounding $" },
-              display: { type: "boolean", description: "math only: true = centred block equation" },
-              root: {
-                type: "object",
-                description: "tree only: the root node. Recursive { name, attributes?, children? }.",
-                properties: {
-                  name: { type: "string" },
-                  attributes: { type: "object", description: "optional key→value labels shown on the node" },
-                  children: { type: "array", description: "child nodes, same shape (max depth ~4)", items: { type: "object" } },
-                },
-              },
-              orientation: { type: "string", enum: ["vertical", "horizontal"], description: "tree only" },
-              level: { type: "integer", enum: [1, 2, 3], description: "heading only" },
-              muted: { type: "boolean", description: "paragraph only" },
-              style: { type: "string", enum: ["bullet", "numbered"], description: "list only" },
-              items: { type: "array", items: { type: "string" }, description: "list only, 3-10 entries" },
-              tone: { type: "string", enum: ["info", "success", "warning"], description: "callout only" },
-              icon: { type: "string", enum: [...ICON_NAMES], description: "callout/diagram nodes" },
-              language: { type: "string", description: "code only, e.g. python" },
-              code: { type: "string", description: "code block source, OR the Mermaid DSL for a mermaid block" },
-              chartType: { type: "string", enum: ["bar", "line", "pie", "donut"], description: "chart only" },
-              title: { type: "string", description: "chart/quiz title" },
-              data: {
-                type: "object",
-                description: "chart only",
-                properties: {
-                  labels: { type: "array", items: { type: "string" } },
-                  series: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      required: ["name", "values"],
-                      properties: {
-                        name: { type: "string" },
-                        values: { type: "array", items: { type: "number" } },
-                        color: { type: "string", enum: [...COLOR_TOKENS] },
-                      },
-                    },
-                  },
-                },
-              },
-              questions: {
-                type: "array",
-                description: "quiz only: 6-8 questions covering the whole lecture (it is the only quiz)",
-                items: {
-                  type: "object",
-                  required: ["question", "options", "correctIndex", "explanation", "concept"],
-                  properties: {
-                    question: { type: "string" },
-                    options: { type: "array", items: { type: "string" }, description: "2-4 options" },
-                    correctIndex: { type: "integer", description: "0-based index into options" },
-                    explanation: { type: "string", description: "Shown after answering" },
-                    concept: {
-                      type: "string",
-                      description:
-                        "The single concept from the lesson brief this question tests, named exactly as the brief names it",
-                    },
-                  },
-                },
-              },
-              caption: { type: "string", description: "Muted line under the block; narration-friendly" },
-              sideText: { type: "string", description: "Optional right-hand column note" },
-            },
-          },
-        },
-      },
-    },
-  },
-};
-
-/**
- * The setup lane's writer tool. A separate tool rather than a flag on
- * `emit_topic_blocks`: the properties a quiz, a chart and a tree need are pure
- * noise to a writer producing install steps, and every one of them is another
- * shape the model can reach for by mistake. What is left is the palette an
- * install guide is actually made of, plus `checks` for the closing checklist.
- *
- * Note what is NOT here, on either tool: any property that could hold a url.
- * The download links come from the server's own search results.
- */
-export const emitSetupBlocksTool: OpenAI.Chat.ChatCompletionFunctionTool = {
-  type: "function",
-  function: {
-    name: "emit_setup_blocks",
-    description:
-      "Emit the final blocks for this stage of the setup guide, in the planned order — exactly as many blocks as planned. Call exactly once.",
-    parameters: {
-      type: "object",
-      required: ["blocks"],
-      properties: {
-        blocks: {
-          type: "array",
-          items: {
-            type: "object",
-            required: ["type"],
-            properties: {
-              type: {
-                type: "string",
-                enum: ["heading", "paragraph", "list", "callout", "code", "table", "mermaid", "checklist"],
-              },
-              text: { type: "string", description: "heading/paragraph/callout body" },
-              level: { type: "integer", enum: [1, 2, 3], description: "heading only" },
-              muted: { type: "boolean", description: "paragraph only" },
-              style: {
-                type: "string",
-                enum: ["bullet", "numbered"],
-                description: "list only — use \"numbered\" for anything the student performs in order",
-              },
-              items: { type: "array", items: { type: "string" }, description: "list only, 3-10 entries" },
-              tone: { type: "string", enum: ["info", "success", "warning"], description: "callout only" },
-              icon: { type: "string", enum: [...ICON_NAMES], description: "callout only" },
-              language: {
-                type: "string",
-                description: "code only — powershell, bash, zsh, cmd, or the language of the snippet",
-              },
-              code: { type: "string", description: "code block source, OR the Mermaid DSL for a mermaid block" },
-              alt: { type: "string", description: "mermaid only: narration + accessibility description" },
-              columns: { type: "array", items: { type: "string" }, description: "table only: 1-6 header labels" },
-              rows: {
-                type: "array",
-                description: "table only: each row an array of cell strings, one per column",
-                items: { type: "array", items: { type: "string" } },
-              },
-              title: { type: "string", description: "checklist title" },
-              checks: {
-                type: "array",
-                description:
-                  "checklist only: what the student ticks off to prove the setup worked. Each is one verifiable thing.",
-                items: {
-                  type: "object",
-                  required: ["text"],
-                  properties: {
-                    text: { type: "string", description: "The thing that should now be true" },
-                    command: { type: "string", description: "The exact command that proves it, when there is one" },
-                    expected: { type: "string", description: "Exactly what they should see — never \"it works\"" },
-                  },
-                },
-              },
-              caption: { type: "string", description: "Muted line under the block; narration-friendly" },
-              sideText: { type: "string", description: "Optional right-hand column note" },
-            },
-          },
-        },
-      },
-    },
-  },
-};
-
-/**
- * Pins a writer tool's `blocks` array to the planned length.
- *
- * "Emit exactly N blocks" was stated only in prose — in the system prompt, in
- * the tool description, and in the numbered brief list — and the writers still
- * returned N+1 often enough to burn both attempts and sink whole lectures. The
- * count is known at every call site, so it belongs in the JSON Schema where a
- * provider's structured-output layer can hold the model to it.
- *
- * Advisory, not a guarantee: not every provider enforces `minItems`/`maxItems`.
- * The parse-side count check stays as the real gate.
- */
-export function withBlockCount(
-  tool: OpenAI.Chat.ChatCompletionFunctionTool,
-  count: number,
-): OpenAI.Chat.ChatCompletionFunctionTool {
-  const params = tool.function.parameters as { properties?: { blocks?: Record<string, unknown> } };
-  const blocks = params?.properties?.blocks;
-  if (!blocks) return tool;
-  return {
-    ...tool,
-    function: {
-      ...tool.function,
-      parameters: {
-        ...params,
-        properties: { ...params.properties, blocks: { ...blocks, minItems: count, maxItems: count } },
-      },
-    },
-  };
-}
 
 /**
  * The downloads picker. Same shape as `emit_resource_picks` and for the same

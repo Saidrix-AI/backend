@@ -3,7 +3,7 @@ import { z } from "zod";
 import { env } from "../../config/env.js";
 import { LEVELS } from "../../validation/course.schema.js";
 import { languageInstruction, type Language } from "../../validation/language.js";
-import { getOpenAICompatClient } from "../llm.js";
+import { getModelName, hasOpenAICompatProvider } from "../llm.js";
 import { formatZodIssues, runForcedToolCall, type LlmDeps } from "../shared/forcedToolCall.js";
 import {
   emittedProfileSchema,
@@ -145,9 +145,8 @@ function buildUserMessage(ctx: {
 }
 
 function resolveDeps(): LlmDeps | null {
-  const oai = getOpenAICompatClient();
-  if (!oai) return null;
-  return { client: oai.client, model: env.ASSESSMENT_MODEL ?? env.COURSE_MAKER_MODEL ?? oai.model };
+  if (!hasOpenAICompatProvider()) return null;
+  return { model: env.ASSESSMENT_MODEL ?? env.COURSE_MAKER_MODEL ?? getModelName() };
 }
 
 /**

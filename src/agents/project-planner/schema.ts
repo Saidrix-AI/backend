@@ -19,6 +19,16 @@ export const plannedProjectSchema = z.object({
   icon: z.enum(COURSE_ICON_NAMES).catch("robot"),
   /** 1-based chapter number as the model sees it; normalised in index.ts. */
   chapterNumber: z.number().int().min(1).max(30),
+  /**
+   * 1-based lesson number WITHIN that chapter, after which the project opens.
+   *
+   * Optional, and 0 means "the whole chapter" — which is the old behaviour, so
+   * a plan that names none of these gates exactly as it always did. Resolved
+   * into a real lessonId by the course-maker once ids have been minted.
+   */
+  unlockAfterTopic: z.number().int().min(0).max(40).catch(0).default(0),
+  /** Days from unlock to submission. 0 = no deadline. */
+  submitWithinDays: z.number().int().min(0).max(90).catch(0).default(0),
   difficulty: z.enum(PROJECT_TIERS).catch("practice"),
   estimatedHours: z.number().int().min(1).max(200).catch(4),
 });
@@ -55,6 +65,16 @@ export const emitProjectPlanTool: OpenAI.Chat.ChatCompletionFunctionTool = {
               chapterNumber: {
                 type: "integer",
                 description: "The chapter number whose skills this project applies (1-based)",
+              },
+              unlockAfterTopic: {
+                type: "integer",
+                description:
+                  "1-based lesson number WITHIN that chapter, after which the student could actually build this. Use the earliest lesson that makes it possible — not the end of the chapter — so they are not kept waiting through lessons the project does not need. 0 means the whole chapter is required.",
+              },
+              submitWithinDays: {
+                type: "integer",
+                description:
+                  "Days to hand it in, counted from finishing the unlocking lesson. ~3-5 for a starter, 7-10 for practice, 14-21 for a capstone. 0 for no deadline.",
               },
               difficulty: {
                 type: "string",

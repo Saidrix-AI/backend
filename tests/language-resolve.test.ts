@@ -2,15 +2,21 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_LANGUAGE,
   LANGUAGE_OPTIONS,
+  SPEECH_LANGUAGES,
+  hasTunedTurnDetection,
+  isSpeechSupported,
   languageInstruction,
   languageLabel,
   localized,
   resolveLanguage,
+  suggestLanguages,
 } from "../src/validation/language.js";
 
-// The language set is OPEN: the card offers four, the free-text box takes
-// anything. The bug this replaces silently turned every unrecognised answer
-// into English, so a student who typed "Japanese" got an English course.
+// The language set is OPEN FOR WRITING: the card offers four, the free-text box
+// takes anything, and a student who typed "Japanese" used to get an English
+// course. It is CLOSED FOR SPEAKING — the tutor can only say the 44 the speech
+// model knows — and the difference between those two lists is what the intake's
+// re-ask is built on.
 
 describe("LANGUAGE_OPTIONS", () => {
   it("offers exactly four genuinely different languages", () => {
@@ -72,6 +78,91 @@ describe("resolveLanguage", () => {
     expect(resolveLanguage("   ").code).toBe("en");
     expect(resolveLanguage("!!!").code).toBe("en");
     expect(resolveLanguage("please write it in whatever you think is best for me").code).toBe("en");
+  });
+});
+
+describe("what the tutor can actually speak", () => {
+  // Pinned so a silent edit to the table fails here rather than at the moment a
+  // student is sitting in a classroom waiting to be spoken to.
+  it("is Sonic-3.6's 44 languages", () => {
+    expect(SPEECH_LANGUAGES.size).toBe(44);
+  });
+
+  it("covers the four on the card", () => {
+    for (const label of LANGUAGE_OPTIONS) {
+      expect(isSpeechSupported(resolveLanguage(label).code), label).toBe(true);
+    }
+  });
+
+  it("speaks Bangla, which is the whole reason for leaving Deepgram", () => {
+    expect(isSpeechSupported("bn")).toBe(true);
+  });
+
+  // The one language we can NAME but not SPEAK. Kept in the recognised table
+  // precisely so the intake can say "not Nepali" instead of slugging it.
+  it("cannot speak Nepali, and still recognises it", () => {
+    expect(resolveLanguage("Nepali").code).toBe("ne");
+    expect(isSpeechSupported("ne")).toBe(false);
+  });
+
+  it("cannot speak a language it has never heard of", () => {
+    expect(isSpeechSupported(resolveLanguage("Swahili").code)).toBe(false);
+  });
+
+  // Every recognised language should be speakable, or there is a reason. Nepali
+  // is that reason; a second one appearing here means the table drifted.
+  it("recognises nothing unspeakable except Nepali", () => {
+    const named = ["en", "bn", "hi", "es", "ar", "ur", "fr", "de", "pt", "id", "ta", "te",
+      "ne", "zh", "ja", "ko", "ru", "tr", "vi", "it", "nl", "pl", "uk", "sv", "da", "no",
+      "fi", "cs", "sk", "hu", "ro", "bg", "hr", "el", "he", "ka", "th", "ms", "tl", "mr",
+      "gu", "kn", "ml", "pa", "or"];
+    expect(named.filter((c) => !isSpeechSupported(c))).toEqual(["ne"]);
+  });
+});
+
+describe("turn detection", () => {
+  // Not a bug — a warning. The detector falls back to a default threshold for
+  // everything else, and this is the one place that says which languages get
+  // the tuned path.
+  it("is tuned for English and Hindi but NOT for Bangla", () => {
+    expect(hasTunedTurnDetection("en")).toBe(true);
+    expect(hasTunedTurnDetection("hi")).toBe(true);
+    expect(hasTunedTurnDetection("bn")).toBe(false);
+  });
+
+  it("only claims tuning for languages we can speak at all", () => {
+    for (const code of ["en", "es", "fr", "de", "it", "pt", "nl", "zh", "ja", "ko", "id", "tr", "ru", "hi"]) {
+      expect(isSpeechSupported(code), code).toBe(true);
+    }
+  });
+});
+
+describe("suggestLanguages", () => {
+  it("offers neighbours first for a language we know but cannot speak", () => {
+    const picks = suggestLanguages("ne");
+    expect(picks[0]).toContain("Hindi");
+    expect(picks[1]).toContain("Bangla");
+  });
+
+  it("falls back to the card's four when there is nothing to go on", () => {
+    // A slug carries no family information, so guessing would be invention.
+    expect(suggestLanguages("swahili")).toEqual(LANGUAGE_OPTIONS);
+  });
+
+  it("never suggests the language that was just refused, or one we cannot speak", () => {
+    for (const code of ["ne", "swahili", "en"]) {
+      const picks = suggestLanguages(code);
+      expect(picks).not.toContain(languageLabel(code));
+      for (const label of picks) {
+        expect(isSpeechSupported(resolveLanguage(label).code), label).toBe(true);
+      }
+    }
+  });
+
+  it("gives at most four, all different", () => {
+    const picks = suggestLanguages("ne");
+    expect(picks.length).toBeLessThanOrEqual(4);
+    expect(new Set(picks).size).toBe(picks.length);
   });
 });
 

@@ -1,14 +1,27 @@
 import { EventEmitter } from "node:events";
 import { Types } from "mongoose";
 import { makeLecture, type LectureProgressEvent, type LessonContext } from "../agents/lecture-maker/index.js";
+import { withTokenLedger } from "../agents/shared/tokenLedger.js";
+import { LECTURE_VERSION } from "../agents/lecture-maker/sections.js";
+import {
+  findQuiz,
+  toLectureJson,
+  type LectureAudience,
+  type LectureDocShape,
+  type LectureJson,
+} from "./lectureProjection.js";
 import { buildStudentContext } from "./studentMemory.service.js";
 import { getLearnerProfile } from "./learnerProfile.service.js";
 import { CourseModel, type Course } from "../database/models/course.model.js";
+import { EnrollmentModel } from "../database/models/enrollment.model.js";
 import { LectureModel } from "../database/models/lecture.model.js";
 import { LecturePositionModel } from "../database/models/lecturePosition.model.js";
+import { ProjectModel } from "../database/models/project.model.js";
+import { QuizAttemptModel } from "../database/models/quizAttempt.model.js";
 import { ApiError } from "../utils/apiError.js";
 import { logger } from "../utils/logger.js";
 import { assertCourseEnterable } from "./activeSelection.service.js";
+import { projectLock } from "./projectGate.js";
 
 export type { LectureProgressEvent } from "../agents/lecture-maker/index.js";
 
@@ -37,7 +50,7 @@ export const DEMO_LESSON_IDS: ReadonlySet<string> = new Set([
  *
  * Returns null for the ownerless demo lectures, which every account may read.
  */
-async function requireOwnedLesson(
+export async function requireOwnedLesson(
   userId: string,
   lessonId: string,
 ): Promise<{ _id: Types.ObjectId } | null> {
@@ -75,67 +88,9 @@ export async function assertLessonEnterable(userId: string, lessonId: string): P
   await assertCourseEnterable(userId, String(course._id));
 }
 
-interface LectureDocShape {
-  lessonId: string;
-  version?: number;
-  language?: string;
-  kind?: string;
-  course?: { title?: string; breadcrumb?: string[] };
-  title: string;
-  outline?: unknown[];
-  blocks?: unknown[];
-}
+export type { LectureAudience } from "./lectureProjection.js";
+export type { LectureJson };
 
-interface QuizQuestion {
-  question: string;
-  options: string[];
-  correctIndex: number;
-  explanation?: string;
-  concept?: string;
-}
-
-/**
- * Removes the answer key from a lecture's quiz blocks.
- *
- * The closing quiz is the lesson's exam, so `correctIndex` (and the `concept`
- * tag, which hints at it) must never leave the server — the same rule
- * knowledgeAssessment.model documents for the intake diagnostics. Grading
- * happens in `gradeLectureQuiz` against a fresh read of the document.
- *
- * `explanation` goes too: it usually names the right answer in prose.
- */
-function stripQuizAnswers(blocks: unknown[] | undefined): unknown[] | undefined {
-  if (!blocks) return blocks;
-  return blocks.map((block) => {
-    const b = block as { type?: string; questions?: QuizQuestion[] };
-    if (b?.type !== "quiz" || !Array.isArray(b.questions)) return block;
-    return {
-      ...b,
-      questions: b.questions.map(({ correctIndex: _c, explanation: _e, concept: _k, ...rest }) => rest),
-    };
-  });
-}
-
-/**
- * The lecture JSON shape the Classroom and the voice agent both consume.
- * Every exit from this service goes through here, so the strip above applies
- * to the cached read, the generate call and the progress stream alike.
- */
-function toLectureJson(doc: LectureDocShape) {
-  return {
-    id: doc.lessonId,
-    version: doc.version,
-    language: doc.language,
-    // Absent on lectures cached before the setup lane existed — those are all
-    // concept lectures, so the client's fallback is the correct answer.
-    kind: doc.kind ?? "concept",
-    course: doc.course,
-    title: doc.title,
-    outline: doc.outline,
-    blocks: stripQuizAnswers(doc.blocks),
-  };
-}
-export type LectureJson = ReturnType<typeof toLectureJson>;
 
 /**
  * Reads a lecture the caller is entitled to.
@@ -143,11 +98,15 @@ export type LectureJson = ReturnType<typeof toLectureJson>;
  * `LectureModel` has no owner field, so the ownership question is answered
  * against the caller's courses before the document is touched at all.
  */
-export async function getLectureByLessonId(userId: string, lessonId: string): Promise<LectureJson> {
+export async function getLectureByLessonId(
+  userId: string,
+  lessonId: string,
+  audience: LectureAudience = "student",
+): Promise<LectureJson> {
   await requireOwnedLesson(userId, lessonId);
-  const doc = await LectureModel.findOne({ lessonId }).lean();
+  const doc = await LectureModel.findOne({ lessonId, version: LECTURE_VERSION }).lean();
   if (!doc) throw new ApiError(404, "Lecture not found");
-  return toLectureJson(doc as LectureDocShape);
+  return toLectureJson(doc as LectureDocShape, audience);
 }
 
 export interface GradedQuestion {
@@ -184,13 +143,10 @@ export async function gradeLectureQuiz(
 ): Promise<QuizResult> {
   await requireOwnedLesson(userId, lessonId);
 
-  const doc = await LectureModel.findOne({ lessonId }).lean();
+  const doc = await LectureModel.findOne({ lessonId, version: LECTURE_VERSION }).lean();
   if (!doc) throw new ApiError(404, "Lecture not found");
 
-  const quiz = ((doc as LectureDocShape).blocks ?? []).find(
-    (b) => (b as { type?: string })?.type === "quiz",
-  ) as { questions?: QuizQuestion[] } | undefined;
-  const questions = quiz?.questions;
+  const questions = findQuiz(doc as unknown as LectureDocShape);
   if (!Array.isArray(questions) || questions.length === 0) {
     throw new ApiError(404, "This lecture has no quiz");
   }
@@ -311,22 +267,26 @@ function startJob(userId: string, lessonId: string): GenerationJob {
     ]);
     const os = (profile?.operatingSystem || undefined) as LessonContext["os"];
     const ctx = lessonContextFrom(course as Course, lessonId, learner, os);
-    const made = await makeLecture(ctx, undefined, onProgress);
+    const made = await withTokenLedger(`lecture ${lessonId}`, () => makeLecture(ctx, undefined, onProgress));
     const $set = {
-      version: 1,
+      version: LECTURE_VERSION,
       language: made.language,
       kind: made.kind,
       title: made.title,
       course: { title: ctx.courseTitle, breadcrumb: [ctx.courseTitle, ctx.chapterTitle, ctx.moduleTitle] },
       outline: made.outline,
-      blocks: made.blocks,
+      sections: made.sections,
     };
     try {
-      const doc = await LectureModel.findOneAndUpdate({ lessonId }, { $set }, { upsert: true, new: true }).lean();
+      const doc = await LectureModel.findOneAndUpdate(
+        { lessonId },
+        { $set, $unset: { blocks: "", beats: "" } },
+        { upsert: true, new: true },
+      ).lean();
       return toLectureJson(doc as unknown as LectureDocShape);
     } catch (err: unknown) {
       if ((err as { code?: number }).code === 11000) {
-        const doc = await LectureModel.findOne({ lessonId }).lean();
+        const doc = await LectureModel.findOne({ lessonId, version: LECTURE_VERSION }).lean();
         if (doc) return toLectureJson(doc as LectureDocShape);
       }
       throw err;
@@ -363,7 +323,7 @@ export async function generateLectureForLesson(
   lessonId: string,
 ): Promise<{ lecture: LectureJson; created: boolean }> {
   await assertLessonEnterable(userId, lessonId);
-  const existing = await LectureModel.findOne({ lessonId }).lean();
+  const existing = await LectureModel.findOne({ lessonId, version: LECTURE_VERSION }).lean();
   if (existing) return { lecture: toLectureJson(existing as LectureDocShape), created: false };
 
   const job = jobs.get(lessonId) ?? startJob(userId, lessonId);
@@ -387,7 +347,7 @@ export async function* streamLectureGeneration(
   lessonId: string,
 ): AsyncGenerator<LectureStreamEvent> {
   await assertLessonEnterable(userId, lessonId);
-  const existing = await LectureModel.findOne({ lessonId }).lean();
+  const existing = await LectureModel.findOne({ lessonId, version: LECTURE_VERSION }).lean();
   if (existing) {
     yield { type: "done", lecture: toLectureJson(existing as LectureDocShape), cached: true };
     return;
@@ -456,19 +416,41 @@ export async function* streamLectureGeneration(
 export async function getLecturePosition(
   userId: string,
   lessonId: string,
-): Promise<{ blockIndex: number; mode: string } | null> {
+): Promise<{
+  blockIndex: number;
+  mode: string;
+  beatId: string;
+  beatPhase: string;
+  knownBeats: string[];
+  partlyBeats: string[];
+} | null> {
   const doc = await LecturePositionModel.findOne({
     userId: new Types.ObjectId(userId),
     lessonId,
   }).lean();
   if (!doc) return null;
-  return { blockIndex: doc.blockIndex ?? 0, mode: doc.mode ?? "lecture" };
+  return {
+    blockIndex: doc.blockIndex ?? 0,
+    mode: doc.mode ?? "lecture",
+    beatId: doc.beatId ?? "",
+    beatPhase: doc.beatPhase ?? "",
+    knownBeats: doc.knownBeats ?? [],
+    partlyBeats: doc.partlyBeats ?? [],
+  };
 }
 
 export async function saveLecturePosition(
   userId: string,
   lessonId: string,
-  input: { blockIndex: number; mode?: string; courseId?: string },
+  input: {
+    blockIndex: number;
+    mode?: string;
+    courseId?: string;
+    beatId?: string;
+    beatPhase?: string;
+    knownBeats?: string[];
+    partlyBeats?: string[];
+  },
 ): Promise<void> {
   await LecturePositionModel.updateOne(
     { userId: new Types.ObjectId(userId), lessonId },
@@ -477,8 +459,150 @@ export async function saveLecturePosition(
         blockIndex: Math.max(0, Math.floor(input.blockIndex)),
         mode: input.mode ?? "lecture",
         ...(input.courseId ? { courseId: input.courseId } : {}),
+        // Written unconditionally when the field is present, empty string
+        // included: a v1 lecture has no beat, and leaving a previous one in
+        // place would resume a concept the student is no longer in.
+        ...(input.beatId !== undefined ? { beatId: input.beatId } : {}),
+        ...(input.beatPhase !== undefined ? { beatPhase: input.beatPhase } : {}),
+        ...(input.knownBeats !== undefined ? { knownBeats: input.knownBeats } : {}),
+        ...(input.partlyBeats !== undefined ? { partlyBeats: input.partlyBeats } : {}),
       },
     },
     { upsert: true },
   );
+}
+
+/**
+ * What the live tutor should assume about this student before they have said a
+ * word: the course's level and how their last few exams in this course went.
+ *
+ * WHY THE TUTOR NEEDS IT. It decides whether to open each topic by asking "what
+ * do you already know?" or by teaching (voice-service teaching_loop.py). Blind,
+ * it asked a student who had scored 1/8 on the previous lesson's exam minutes
+ * earlier what they knew — six topics in a row, six "I don't know"s.
+ *
+ * Numbers and enums only, never profile prose: this goes to a service that
+ * branches on it, not to a prompt. Read by the agent on every join and never
+ * cached with the lecture, because the most useful fact in it is the exam the
+ * student sat five minutes ago.
+ */
+export interface LearnerSignal {
+  level: "beginner" | "intermediate" | "advanced" | "";
+  /** Mean of the last few graded exam scores in this course (0-100), or null if none. */
+  recentExamPct: number | null;
+  recentExams: number;
+}
+
+/** How many recent graded exams in the course the signal averages. */
+const SIGNAL_RECENT_EXAMS = 3;
+
+export async function getLearnerSignal(userId: string, lessonId: string): Promise<LearnerSignal> {
+  const empty: LearnerSignal = { level: "", recentExamPct: null, recentExams: 0 };
+  const owned = await requireOwnedLesson(userId, lessonId);
+  if (!owned) return empty;
+  const [course, attempts] = await Promise.all([
+    CourseModel.findById(owned._id, { level: 1 }).lean(),
+    // First attempts only (`graded`): a retake is sat with the key in hand.
+    QuizAttemptModel.find(
+      { userId: new Types.ObjectId(userId), courseId: String(owned._id), graded: { $ne: false } },
+      { score: 1 },
+    )
+      .sort({ createdAt: -1 })
+      .limit(SIGNAL_RECENT_EXAMS)
+      .lean(),
+  ]);
+  const level = String(course?.level ?? "").toLowerCase();
+  const scores = attempts.map((a) => Number(a.score)).filter((s) => Number.isFinite(s));
+  return {
+    level: level === "beginner" || level === "intermediate" || level === "advanced" ? level : "",
+    recentExamPct: scores.length ? Math.round(scores.reduce((sum, s) => sum + s, 0) / scores.length) : null,
+    recentExams: scores.length,
+  };
+}
+
+export interface NextUp {
+  nextLessonId: string;
+  nextLessonTitle: string;
+  /** The lesson's own exam, not yet attempted. */
+  quizPending: boolean;
+  /** Projects that finishing THIS lesson opens, with their deadline if any. */
+  unlockedProjects: { id: string; title: string; dueInDays: number | null }[];
+}
+
+/**
+ * What comes after this lesson — read by the tutor at the end of a class, for
+ * its goodbye.
+ *
+ * A tutor that says "that's the lesson, well done" and stops is a narrator. The
+ * difference is being able to say what to do next, by name: the lesson that
+ * follows, the quiz still waiting, the project this one just opened. None of
+ * that is knowable from the lecture document, which is why it is a round-trip
+ * rather than something baked in at generation time — the answer depends on
+ * what THIS student has finished.
+ *
+ * Every part is best-effort and independently omissible. This runs while the
+ * student is sitting in the room waiting to be said goodbye to, so a missing
+ * field costs one sentence and an exception would cost the goodbye.
+ */
+export async function getNextUp(userId: string, lessonId: string): Promise<NextUp> {
+  const empty: NextUp = { nextLessonId: "", nextLessonTitle: "", quizPending: false, unlockedProjects: [] };
+  // Ownership first, as everywhere else — and then the curriculum, which
+  // requireOwnedLesson deliberately does not fetch (it selects `_id` only, so
+  // the gate stays a single indexed lookup on every classroom read).
+  const owned = await requireOwnedLesson(userId, lessonId);
+  if (!owned) return empty;
+  const course = await CourseModel.findById(owned._id).lean();
+  if (!course) return empty;
+
+  const courseId = String(course._id);
+  const ordered = orderedTopics(course as Course);
+  const at = ordered.findIndex((t) => t.lessonId === lessonId);
+  const next = at >= 0 ? ordered[at + 1] : undefined;
+
+  const [enrollment, attempt, projects, lecture] = await Promise.all([
+    EnrollmentModel.findOne({ userId: new Types.ObjectId(userId), courseId }, { completedLessonIds: 1 }).lean(),
+    QuizAttemptModel.findOne({ userId: new Types.ObjectId(userId), quizId: lessonId }, { _id: 1 }).lean(),
+    ProjectModel.find({ userId: new Types.ObjectId(userId), courseId }, { title: 1, submitWithinDays: 1, unlockLessonId: 1, chapterIndex: 1, difficulty: 1, courseId: 1 }).lean(),
+    LectureModel.findOne({ lessonId, version: LECTURE_VERSION }, { sections: 1 }).lean(),
+  ]);
+
+  // The lesson is being completed right now, so the student's stored set does
+  // not contain it yet — which is exactly the set the gate must be asked about
+  // to find what THIS lesson opens.
+  const done = new Set([...(enrollment?.completedLessonIds ?? []), lessonId]);
+  const before = new Set(enrollment?.completedLessonIds ?? []);
+
+  const unlockedProjects: NextUp["unlockedProjects"] = [];
+  for (const project of projects) {
+    const gated = { courseId: project.courseId, chapterIndex: project.chapterIndex, difficulty: project.difficulty, unlockLessonId: project.unlockLessonId };
+    // Newly open: shut before this lesson, open after it. A project that was
+    // already open is not news and the tutor should not re-announce it.
+    const shut = projectLock(gated, course as Pick<Course, "chapters">, [...before]).locked;
+    const open = !projectLock(gated, course as Pick<Course, "chapters">, [...done]).locked;
+    if (shut && open) {
+      const days = project.submitWithinDays ?? 0;
+      unlockedProjects.push({ id: String(project._id), title: project.title, dueInDays: days > 0 ? days : null });
+    }
+  }
+
+  const hasQuiz = Boolean(lecture && findQuiz(lecture as unknown as LectureDocShape)?.length);
+  return {
+    nextLessonId: next?.lessonId ?? "",
+    nextLessonTitle: next?.title ?? "",
+    quizPending: hasQuiz && !attempt,
+    unlockedProjects,
+  };
+}
+
+/** Every topic of a course in reading order — the same order the roadmap uses. */
+function orderedTopics(course: Course): { lessonId: string; title: string }[] {
+  const out: { lessonId: string; title: string }[] = [];
+  for (const chapter of course.chapters ?? []) {
+    for (const module of chapter.modules ?? []) {
+      for (const topic of module.topics ?? []) {
+        out.push({ lessonId: topic.lessonId, title: topic.title });
+      }
+    }
+  }
+  return out;
 }

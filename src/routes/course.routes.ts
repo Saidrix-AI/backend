@@ -27,6 +27,7 @@ courseRouter.get("/active", courseController.getActive);
 courseRouter.put("/active", validateBody(setActiveSchema), courseController.setActive);
 courseRouter.delete("/active", courseController.clearActive);
 courseRouter.get("/paths", courseController.listPaths);
+courseRouter.post("/paths/:pathId/courses/:order", courseController.createPathCourse);
 
 courseRouter.get("/:id/detail", courseController.courseDetail);
 courseRouter.post("/", validateBody(createCourseSchema), courseController.createCourse);

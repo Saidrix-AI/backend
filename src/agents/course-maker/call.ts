@@ -1,6 +1,6 @@
 import { env } from "../../config/env.js";
 import { ApiError } from "../../utils/apiError.js";
-import { getOpenAICompatClient } from "../llm.js";
+import { getModelName, hasOpenAICompatProvider } from "../llm.js";
 import {
   runForcedToolCall as runSharedForcedToolCall,
   type ForcedToolCallOptions,
@@ -20,12 +20,11 @@ export type { LlmDeps, ParseResult } from "../shared/forcedToolCall.js";
 export type CourseRole = "expand" | "projects";
 
 export function resolveCourseDeps(role: CourseRole): LlmDeps {
-  const oai = getOpenAICompatClient();
-  if (!oai) {
+  if (!hasOpenAICompatProvider()) {
     throw new ApiError(503, "Course generation needs an OpenAI-compatible LLM provider (openai or openrouter).");
   }
   const override = role === "expand" ? env.COURSE_EXPAND_MODEL : env.PROJECT_PLANNER_MODEL;
-  return { client: oai.client, model: override ?? env.COURSE_MAKER_MODEL ?? oai.model };
+  return { model: override ?? env.COURSE_MAKER_MODEL ?? getModelName() };
 }
 
 export type CourseToolCallOptions<T> = Omit<ForcedToolCallOptions<T>, "maxTokens" | "label">;

@@ -72,6 +72,8 @@ export interface IntakeDonePayload {
 export interface IntakeContext {
   topic: string;
   objective: string;
+  /** "single" for one named topic, "multi" for a broad career/path goal. */
+  scope: "single" | "multi";
   language: Language;
   /** "Finish by: … | Daily time: …", ready to drop into a prompt. */
   timetable: string;
@@ -371,7 +373,23 @@ export async function submitStage(
   }
 
   if (slot.interpret) {
-    applyPatch(doc, await Promise.resolve(slot.interpret(answers, stateOf(doc))));
+    const patch = await Promise.resolve(slot.interpret(answers, stateOf(doc)));
+
+    // The answer was recorded but not usable, so the intake stays exactly where
+    // it is and asks again. Deliberately AFTER the answer is pushed onto
+    // `doc.answers`: what they first said is part of the conversation, and the
+    // report reads better for having it ("asked for Nepali, took Hindi").
+    //
+    // Nothing else in the patch is applied — a re-ask means the slot could not
+    // decide anything, and half-applying it would leave the document claiming a
+    // language the student has not agreed to.
+    if (patch.reask?.length) {
+      setPending(doc, patch.reask);
+      await doc.save();
+      return stagePayload(doc, patch.reask);
+    }
+
+    applyPatch(doc, patch);
   }
 
   // The OS belongs on the learner profile, where the lecture pipeline reads it
@@ -618,6 +636,7 @@ export async function latestIntake(
   return {
     topic: doc.topic,
     objective: doc.objective,
+    scope: doc.scope === "multi" ? "multi" : "single",
     language: (doc.language as Language | undefined) ?? DEFAULT_LANGUAGE,
     timetable,
     goal: doc.answers

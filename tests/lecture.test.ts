@@ -46,14 +46,23 @@ beforeAll(async () => {
 
   await LectureModel.create({
     lessonId,
-    version: 2,
+    version: 3,
     language: "bn",
     course: { title: "Course X", breadcrumb: ["Course X", "Chapter 1"] },
     title: "Test Lecture",
     outline: [{ id: 1, title: "Intro", duration: "3:00" }],
-    blocks: [
-      { id: "b1", topicId: 1, type: "heading", level: 1, text: "Hello" },
-      { id: "b2", topicId: 1, type: "code", language: "python", code: "print('hi')" },
+    sections: [
+      {
+        id: "s1",
+        topicId: 1,
+        title: "Hello",
+        kind: "practical",
+        blocks: [
+          { id: "b1", type: "paragraph", text: "Hello" },
+          { id: "b2", type: "code", language: "python", code: "print('hi')" },
+        ],
+        tutor: { goal: "Say hi", explain: ["secret tutor point"], check: { mustShow: "m" } },
+      },
     ],
   });
 });
@@ -74,11 +83,21 @@ describe("lectures API", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.id).toBe(lessonId);
     expect(res.body.data.language).toBe("bn");
-    expect(res.body.data.version).toBe(2);
+    expect(res.body.data.version).toBe(3);
     expect(res.body.data.title).toBe("Test Lecture");
     expect(res.body.data.outline).toHaveLength(1);
+    expect(res.body.data.sections[0].kind).toBe("practical");
     expect(res.body.data.blocks).toHaveLength(2);
     expect(res.body.data.blocks[1].code).toBe("print('hi')");
+    // Tutor instructions never reach the browser.
+    expect(JSON.stringify(res.body)).not.toContain("secret tutor point");
+  });
+
+  it("treats a lecture in an older format as absent, so it regenerates", async () => {
+    await LectureModel.updateOne({ lessonId }, { $set: { version: 2 } });
+    const res = await request(app).get(`/api/lectures/${lessonId}`).set(auth());
+    await LectureModel.updateOne({ lessonId }, { $set: { version: 3 } });
+    expect(res.status).toBe(404);
   });
 
   /**
@@ -101,7 +120,7 @@ describe("lectures API", () => {
 
   it("upserting the same lessonId twice keeps one document (seed idempotency)", async () => {
     const patch = {
-      $set: { version: 3, title: "Test Lecture v3", blocks: [{ id: "b1", type: "paragraph", text: "x" }] },
+      $set: { version: 3, title: "Test Lecture v3" },
     };
     await LectureModel.updateOne({ lessonId }, patch, { upsert: true });
     await LectureModel.updateOne({ lessonId }, patch, { upsert: true });

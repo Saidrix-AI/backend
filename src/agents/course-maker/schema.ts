@@ -79,6 +79,16 @@ export const LIMITS = {
 export const generatedCourseSchema = z.object({
   title: z.string().trim().min(1).max(120),
   desc: z.string().trim().min(1).max(500),
+  /**
+   * Why this student would take it, and what they can do at the end.
+   *
+   * Defaulted rather than required: they are the "is this for me?" copy on the
+   * course page, and a course whose outline is otherwise perfect must not be
+   * lost to a missing paragraph of marketing. Courses generated before these
+   * existed simply show `desc`, as they always did.
+   */
+  whyTake: z.string().trim().max(1200).default(""),
+  outcomes: z.array(z.string().trim().min(1).max(200)).max(10).default([]),
   level: z.enum(LEVELS),
   estimatedHours: z.number().int().min(1).max(5000),
   // A near-miss like "reactjs" would otherwise put a book icon on a React course
@@ -98,6 +108,21 @@ export const generatedCourseSchema = z.object({
     .min(1)
     .max(LIMITS.chapters),
   quizzes: z.array(z.object({ title: z.string().trim().min(1).max(120) })).max(LIMITS.quizzes).default([]),
+  /**
+   * The course's ONE installation lesson, when the student has no working
+   * setup. Inserted by the assembler as the first lesson of chapter 1
+   * (`insertSetupLesson`) — never planned as a chapter, because a chapter gets
+   * a chapter-sized lesson budget and its writer fills it: that is how a
+   * Python course once opened with ten lessons of install, terminal, REPL and
+   * virtual environments. Lenient: a malformed one falls back to a default.
+   */
+  setupLesson: z
+    .object({
+      title: z.string().trim().min(1).max(160),
+      brief: z.string().trim().min(1).max(700),
+    })
+    .optional()
+    .catch(undefined),
 });
 export type GeneratedCourse = z.infer<typeof generatedCourseSchema>;
 
@@ -153,6 +178,18 @@ export const emitCourseTool: OpenAI.Chat.ChatCompletionFunctionTool = {
       properties: {
         title: { type: "string", description: "Course title, 1-120 characters" },
         desc: { type: "string", description: "1-2 sentence course description, max 500 characters" },
+        whyTake: {
+          type: "string",
+          description:
+            "Why THIS student should take this course: the problem it solves for them and what changes once they can do it. 2-4 sentences, addressed to them. Not a restatement of the syllabus and not a restatement of desc — this is the paragraph that answers 'is this for me?'.",
+        },
+        outcomes: {
+          type: "array",
+          maxItems: 10,
+          items: { type: "string" },
+          description:
+            "4-8 things they can DO at the end, each starting with a verb — 'Deploy a container to a cloud host', not 'Understanding of containers'. Concrete enough that they could tell whether it is true of them yet.",
+        },
         level: { type: "string", enum: [...LEVELS] },
         estimatedHours: { type: "integer", description: "Realistic total study hours for the whole course" },
         icon: { type: "string", enum: [...COURSE_ICON_NAMES], description: "The most topical icon name" },
@@ -181,6 +218,20 @@ export const emitCourseTool: OpenAI.Chat.ChatCompletionFunctionTool = {
             type: "object",
             required: ["title"],
             properties: { title: { type: "string" } },
+          },
+        },
+        setupLesson: {
+          type: "object",
+          description:
+            "ONLY when you are told the student has no working setup: the ONE short beginner lesson that gets them ready — install the language/runtime and one code editor, then run a first tiny program. It is added as the first lesson of chapter 1. Never plan installation as a chapter or as more lessons.",
+          required: ["title", "brief"],
+          properties: {
+            title: { type: "string", description: "Lesson title, e.g. 'Install Python and VS Code, run your first program'" },
+            brief: {
+              type: "string",
+              description:
+                "2-3 sentences for the lecture writer: exactly which runtime and which editor to install, and the first program to run to prove it works. Nothing else — no virtual environments, no terminal tutorial, no settings beyond the defaults.",
+            },
           },
         },
       },

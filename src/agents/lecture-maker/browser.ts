@@ -36,6 +36,25 @@ let launchFailureLogged = false;
 const queue: (() => void)[] = [];
 let active = 0;
 
+/**
+ * A separate, tiny budget for calls made while a class is in progress.
+ *
+ * The queue above is sized for a lecture BUILD, where a fifteen-second render
+ * is nothing. `outlineMermaid` runs inside a POST from a voice agent while a
+ * student is listening to a stall line, and queueing it behind four batch
+ * renders would produce a half-minute of silence caused by an unrelated
+ * background job. So the live path never queues at all: it takes one of these
+ * slots or gives up, and giving up is harmless because the check is advisory.
+ */
+const LIVE_SLOTS = 2;
+let liveActive = 0;
+
+function acquireLive(): boolean {
+  if (liveActive >= LIVE_SLOTS) return false;
+  liveActive++;
+  return true;
+}
+
 async function acquire(): Promise<void> {
   if (active < env.LECTURE_SVG_RENDER_CONCURRENCY) {
     active++;
@@ -50,13 +69,24 @@ function release(): void {
   queue.shift()?.();
 }
 
+/**
+ * Installed browsers tried when Playwright's own download is missing. Both are
+ * Chromium, and a developer machine almost always has one — while the pinned
+ * headless build goes missing on every playwright-core bump. That gap turned
+ * off the Mermaid syntax gate for weeks without anyone noticing: a diagram with
+ * a quote in a bare label reached a live class as "could not be rendered"
+ * (lesson w8q5ij2ma4-c1m2t2, block b13, 2026-09-29).
+ */
+const FALLBACK_CHANNELS = ["chrome", "msedge"] as const;
+
 async function launch(): Promise<Browser | null> {
+  // --disable-dev-shm-usage: on a container with a small /dev/shm Chromium
+  // crashes mid-render rather than failing to start, which is far harder to
+  // diagnose from a missing diagram.
+  const args = ["--disable-dev-shm-usage", "--disable-gpu", "--no-sandbox"];
   try {
     return await chromium.launch({
-      // --disable-dev-shm-usage: on a container with a small /dev/shm Chromium
-      // crashes mid-render rather than failing to start, which is far harder to
-      // diagnose from a missing diagram.
-      args: ["--disable-dev-shm-usage", "--disable-gpu", "--no-sandbox"],
+      args,
       // playwright-core ships no browser of its own, so it looks in the location
       // `playwright install` would have used. On an image that gets Chromium
       // from the system instead — the Nixpacks build does — that path does not
@@ -67,6 +97,19 @@ async function launch(): Promise<Browser | null> {
         : {}),
     });
   } catch (err) {
+    // An explicit path that does not work is a deployment mistake to report,
+    // not one to paper over with whatever else happens to be installed.
+    if (!process.env.CHROMIUM_EXECUTABLE_PATH) {
+      for (const channel of FALLBACK_CHANNELS) {
+        try {
+          const browser = await chromium.launch({ args, channel });
+          console.info(`[lecture-maker] Playwright's Chromium is missing — using the installed ${channel} instead.`);
+          return browser;
+        } catch {
+          // Not installed either; try the next one.
+        }
+      }
+    }
     if (!launchFailureLogged) {
       console.warn(
         "[lecture-maker] Chromium could not be launched — diagrams will be measured with the font-metrics " +
@@ -284,6 +327,107 @@ export async function parseMermaidCodes(codes: string[]): Promise<(string | null
   } finally {
     inFlight--;
     release();
+    touchIdleTimer();
+    if (page) await page.close().catch(() => {});
+  }
+}
+
+export interface MermaidOutline {
+  /** e.g. "flowchart-v2". Anything else has a different DOM id scheme. */
+  diagramType: string;
+  /** Node keys, read back out of the ids Mermaid actually emitted. */
+  nodeKeys: string[];
+  /** Edge ids in Mermaid's `L_<from>_<to>_<n>` form. */
+  edgeIds: string[];
+}
+
+/** How long the live path will wait before deciding the answer is not worth it. */
+const OUTLINE_TIMEOUT_MS = 3_000;
+
+/**
+ * Renders one diagram and reads back the parts a reveal can actually target.
+ *
+ * A separate export from `parseMermaidCodes`, not an option on it, because the
+ * two have different latency budgets and nothing else: that one runs in a batch
+ * lecture build where fifteen seconds is free, this one runs inside a request
+ * made while a student is listening. Merging them is how one of those budgets
+ * eventually gets a timeout that suits the other.
+ *
+ * ADVISORY, and deliberately so. It returns null whenever rendering is
+ * disabled, Chromium is missing, or both live slots are busy — so it cannot be
+ * the thing that guarantees a reveal plan is valid. The load-bearing check is
+ * the pure parser in the voice service, which runs every time. What this adds
+ * is the one thing a parser cannot know: what Mermaid *really* emitted.
+ *
+ * It does NOT use the font/palette harness. Node ids are assigned in the parser
+ * before any layout happens, so fonts change coordinates and nothing else — and
+ * skipping them also skips a `document.fonts` await worth hundreds of
+ * milliseconds on a path that has three seconds in total.
+ */
+export async function outlineMermaid(
+  code: string,
+  opts: { live?: boolean } = {},
+): Promise<MermaidOutline | null> {
+  if (!env.LECTURE_SVG_RENDER_ENABLED || !code.trim()) return null;
+  const bundle = mermaidScript();
+  if (!bundle) return null;
+
+  // Two callers with opposite budgets, and mixing them is what the live slots
+  // exist to prevent. A live class never queues — it takes a reserved slot or
+  // gives up, because a caller that has to wait is better served by "I don't
+  // know". A lecture BUILD is the opposite: nobody is listening, the answer is
+  // worth waiting for, and it must NOT take a slot the classroom is holding in
+  // reserve. Defaults to live, so a new caller that forgets to think about this
+  // gets the conservative budget rather than the one that can stall a class.
+  const live = opts.live !== false;
+  if (live) {
+    if (!acquireLive()) return null;
+  } else {
+    await acquire();
+  }
+
+  inFlight++;
+  let page: Page | null = null;
+  try {
+    const browser = await getBrowser();
+    if (!browser) return null;
+    page = await browser.newPage();
+    page.setDefaultTimeout(live ? OUTLINE_TIMEOUT_MS : env.LECTURE_SVG_RENDER_TIMEOUT_MS);
+    await page.setContent("<!doctype html><html><body></body></html>", { waitUntil: "load" });
+    await page.addScriptTag({ content: bundle });
+
+    // A string, like MEASURE_SCRIPT, so the backend tsconfig never has to
+    // type-check `window`. The config must match the frontend's lib/mermaid.js
+    // or this is measuring a different render than the one students see.
+    const script = `(async () => {
+      const mermaid = window.mermaid;
+      if (!mermaid || !mermaid.render) return null;
+      mermaid.initialize({
+        startOnLoad: false, securityLevel: "strict", theme: "base",
+        htmlLabels: false, flowchart: { htmlLabels: false, curve: "basis" },
+      });
+      const id = "outline-" + Date.now();
+      const out = await mermaid.render(id, ${JSON.stringify(code)});
+      const svg = out.svg;
+      const nodes = [...svg.matchAll(new RegExp('id="' + id + '-flowchart-(.+?)-\\\\d+"', "g"))]
+        .map((m) => m[1]);
+      const edges = [...svg.matchAll(/data-id="(L_[^"]+)"/g)].map((m) => m[1]);
+      return {
+        diagramType: out.diagramType || "",
+        nodeKeys: [...new Set(nodes)],
+        edgeIds: [...new Set(edges)],
+      };
+    })()`;
+    return (await page.evaluate(script)) as MermaidOutline | null;
+  } catch (err) {
+    console.warn(
+      `[lecture-maker] Mermaid outline skipped: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  } finally {
+    inFlight--;
+    if (live) liveActive--;
+    else release();
     touchIdleTimer();
     if (page) await page.close().catch(() => {});
   }

@@ -7,8 +7,15 @@ export interface ProjectPlanContext {
   desc: string;
   level: string;
   objective: string;
-  /** Chapters in order with the ground each covers — the skills available by then. */
-  chapters: { title: string; covers: string }[];
+  /**
+   * Chapters in order with the ground each covers — the skills available by
+   * then — and each chapter's lessons, so a project can name the ONE lesson
+   * that opens it rather than waiting for the whole chapter.
+   *
+   * `topics` is empty when the curriculum has not been written yet, and the
+   * planner then falls back to chapter-level mapping exactly as it used to.
+   */
+  chapters: { title: string; covers: string; topics?: string[] }[];
   /** One-line picture of the student from the knowledge assessment, if any. */
   profile?: string;
 }
@@ -25,12 +32,20 @@ Rules:
 - No two projects may be the same idea at different sizes. Vary the domain (data, text, games, tools, APIs) so the set stays interesting.
 - tags: 2-6 short technology tags. icon: when the project centres on one technology with a well-known logo, use its brand name — ${BRAND_ICON_NAMES.join(", ")} — which renders in that technology's own colours. Otherwise the most topical generic icon from ${ICON_NAMES.join(", ")}.
 - estimatedHours: realistic — a starter is 1-3 hours, a capstone 10-25.
+- unlockAfterTopic: when the chapter's lessons are listed, give the number of the EARLIEST lesson after which the student could actually build this. A project that only needs the first three lessons of a chapter should not sit locked until all nine are done — that is nine lessons of theory before anything is built. Leave it out only when the project genuinely needs the whole chapter, or when no lessons are listed.
+- submitWithinDays: how long the student should have to hand it in once it opens, counted from when they finish the unlocking lesson. Roughly 3-5 days for a starter, 7-10 for a practice project, 14-21 for a capstone — a deadline that cannot be met is worse than none. Use 0 for no deadline.
 - Write everything in the same language as the course title.`;
 }
 
 export function buildProjectPlanUserMessage(ctx: ProjectPlanContext): string {
   const chapters = ctx.chapters
-    .map((c, i) => `${i + 1}. ${c.title}${c.covers ? ` — covers: ${c.covers}` : ""}`)
+    .map((c, i) => {
+      const head = `${i + 1}. ${c.title}${c.covers ? ` — covers: ${c.covers}` : ""}`;
+      // Numbered within the chapter, because that is what unlockAfterTopic
+      // refers to — a number the model can read off the line above it.
+      const topics = (c.topics ?? []).map((t, n) => `     ${n + 1}) ${t}`).join("\n");
+      return topics ? `${head}\n${topics}` : head;
+    })
     .join("\n");
 
   return [

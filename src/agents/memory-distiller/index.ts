@@ -1,7 +1,7 @@
 import { env } from "../../config/env.js";
 import { ConversationModel } from "../../database/models/conversation.model.js";
 import { StudentMemoryModel } from "../../database/models/studentMemory.model.js";
-import { getOpenAICompatClient } from "../llm.js";
+import { getModelName, hasOpenAICompatProvider } from "../llm.js";
 import { formatZodIssues, runForcedToolCall, type LlmDeps } from "../shared/forcedToolCall.js";
 import { buildDistillSystemPrompt, buildDistillUserMessage } from "./prompt.js";
 import { distillTool, distilledMemorySchema } from "./schema.js";
@@ -53,11 +53,9 @@ const MAX_OUTPUT_TOKENS = 700;
 const inFlight = new Set<string>();
 
 function resolveDeps(): LlmDeps | null {
-  const oai = getOpenAICompatClient();
-  if (!oai) return null;
+  if (!hasOpenAICompatProvider()) return null;
   return {
-    client: oai.client,
-    model: env.MEMORY_DISTILLER_MODEL ?? env.COURSE_MAKER_MODEL ?? oai.model,
+    model: env.MEMORY_DISTILLER_MODEL ?? env.COURSE_MAKER_MODEL ?? getModelName(),
   };
 }
 

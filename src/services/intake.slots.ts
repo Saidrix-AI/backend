@@ -18,7 +18,13 @@ import {
 } from "../agents/tools/prompts/intake.js";
 import type { AskQuestion } from "../agents/tools/types.js";
 import type { IntakeStageName } from "../database/models/learningIntake.model.js";
-import { resolveLanguage, type Language } from "../validation/language.js";
+import {
+  isSpeechSupported,
+  resolveLanguage,
+  suggestLanguages,
+  type Language,
+  type LanguageEntry,
+} from "../validation/language.js";
 
 /**
  * The nine slots of the guided intake, and the rules deciding which of them
@@ -62,8 +68,15 @@ export interface IntakeState {
   planKnown: boolean;
 }
 
-/** What one slot's `interpret` hands back to be merged onto the document. */
-export type StatePatch = Partial<IntakeState>;
+/**
+ * What one slot's `interpret` hands back to be merged onto the document.
+ *
+ * `reask` is the exception to that: it is not merged, it means the answer was
+ * not usable and the intake should ASK AGAIN rather than move on. The slot
+ * table's whole job is "check the answer, then decide the next question" — and
+ * until this existed, the second half only ever pointed forwards.
+ */
+export type StatePatch = Partial<IntakeState> & { reask?: AskQuestion[] };
 
 export interface IntakeSlot {
   key: IntakeStageName;
@@ -87,6 +100,28 @@ export interface IntakeSlot {
 
 const first = (answers: string[]) => answers[0]?.trim() ?? "";
 
+/**
+ * The language card, asked again because the tutor cannot speak what they chose.
+ *
+ * Names their language back to them rather than saying "unsupported": someone
+ * who typed Nepali has told us something real about themselves, and the
+ * suggestions are built from it (Hindi, Bangla, Urdu — not Spanish).
+ *
+ * The free-text box is still there, so this is not a wall — it is a second
+ * attempt with better information, and a student determined to try another
+ * language we cannot speak simply lands here again.
+ */
+function unspeakableLanguageQuestion(chosen: LanguageEntry): AskQuestion {
+  return {
+    header: "Language",
+    question:
+      `I can write your course in ${chosen.label}, but I can't yet SPEAK it — and the ` +
+      "lessons are taught out loud, so the class itself would be silent. " +
+      "Which of these should I use instead?",
+    options: suggestLanguages(chosen.code),
+  };
+}
+
 export const INTAKE_SLOTS: IntakeSlot[] = [
   {
     key: "language",
@@ -98,7 +133,20 @@ export const INTAKE_SLOTS: IntakeSlot[] = [
     // in. The plan call rides along here rather than at intake start, so the
     // first card appears with no LLM call in front of it.
     interpret: async (answers, s) => {
-      const language = resolveLanguage(first(answers)).code;
+      const chosen = resolveLanguage(first(answers));
+
+      // Checked BEFORE the plan call, which costs a model round-trip: a
+      // language we cannot speak is not settled yet, and paying for a plan in
+      // it would be paying for an answer we are about to throw away.
+      //
+      // The course would be perfectly writable in Nepali — it is the CLASS that
+      // cannot happen, and the honest moment to say so is here, not when the
+      // student opens a classroom and meets silence.
+      if (!isSpeechSupported(chosen.code)) {
+        return { reask: [unspeakableLanguageQuestion(chosen)] };
+      }
+
+      const language = chosen.code;
       const plan = await generateIntakePlan({
         topic: s.topic,
         objective: s.objective,

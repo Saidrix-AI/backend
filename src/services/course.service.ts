@@ -32,6 +32,10 @@ export interface QuizInput {
 export interface CourseInput {
   title: string;
   desc?: string;
+  /** Why a student would take this — the "is this for me?" paragraph, not the card blurb. */
+  whyTake?: string;
+  /** What they can do at the end, one action per line. */
+  outcomes?: string[];
   level?: "Beginner" | "Intermediate" | "Advanced";
   /** Content language chosen in the guided intake; lectures inherit it. */
   language?: Language;

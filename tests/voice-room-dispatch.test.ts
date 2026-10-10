@@ -18,12 +18,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const calls: string[] = [];
 const dispatches: { room: string; agent: string; metadata?: string }[] = [];
 let participants: { identity: string }[] = [];
+/** Live rooms the capacity check sees. Set per test. */
+let rooms: { name: string }[] = [];
+/** Makes listRooms throw, as a LiveKit outage would. */
+let roomsFail = false;
 
 vi.mock("livekit-server-sdk", () => ({
   RoomServiceClient: class {
     async listRooms() {
       calls.push("listRooms");
-      return [];
+      if (roomsFail) throw new Error("livekit unreachable");
+      return rooms;
     }
     async listParticipants() {
       calls.push("listParticipants");
@@ -82,7 +87,13 @@ beforeEach(() => {
   gateCalls.length = 0;
   dispatches.length = 0;
   participants = [];
+  rooms = [];
+  roomsFail = false;
 });
+
+/** `n` live classes, none of them this student's. */
+const otherRooms = (n: number) =>
+  Array.from({ length: n }, (_, i) => ({ name: `voice_other${i}_lesson-x` }));
 
 describe("voice room dispatch", () => {
   /**
@@ -97,7 +108,9 @@ describe("voice room dispatch", () => {
 
   it("creates the room and asks for a tutor on a first entry", async () => {
     await start();
-    expect(calls).toEqual(["createRoom", "listParticipants", "createDispatch"]);
+    // listRooms first: the capacity check runs before anything is created, so
+    // a refusal costs nothing and leaves no half-made room behind.
+    expect(calls).toEqual(["listRooms", "createRoom", "listParticipants", "createDispatch"]);
   });
 
   it("asks for a tutor again when the room was left without one", async () => {
@@ -148,5 +161,60 @@ describe("voice room dispatch", () => {
     const session = await start();
     expect(session.roomName).toBe(ROOM);
     expect(session.token).toBe("test-token");
+  });
+});
+
+/**
+ * How many classes can be voiced at once.
+ *
+ * The limit is the SPEECH provider's, not LiveKit's: Cartesia bills
+ * simultaneous requests, and past the plan's number it rejects the synthesis —
+ * which reaches the student as a tutor that joins the room and then says
+ * nothing. A 429 the classroom can explain is better than that in every way,
+ * and the lecture is still open to read either way.
+ */
+describe("voice concurrency", () => {
+  const LIMIT = 15; // env default, the Scale plan's number
+
+  it("lets a class start while there is room", async () => {
+    rooms = otherRooms(LIMIT - 1);
+    await expect(start()).resolves.toBeTruthy();
+    expect(calls).toContain("createRoom");
+  });
+
+  it("refuses once every line is busy, before creating anything", async () => {
+    rooms = otherRooms(LIMIT);
+    await expect(start()).rejects.toMatchObject({ statusCode: 429 });
+    // Nothing was created and no tutor was asked for: the refusal has to leave
+    // the world exactly as it found it, or a burst leaves orphan rooms behind.
+    expect(calls).toEqual(["listRooms"]);
+  });
+
+  /**
+   * The student is already counted — they are in that room. Turning a dropped
+   * connection into a refusal would punish the one person the limit is not
+   * about, and a reconnect is when a class is most fragile.
+   */
+  it("always lets a student back into their own room", async () => {
+    rooms = [...otherRooms(LIMIT), { name: ROOM }];
+    await expect(start()).resolves.toBeTruthy();
+    expect(calls).toContain("createRoom");
+  });
+
+  it("counts only classrooms, not every room on the server", async () => {
+    // Anything not named voice_* belongs to something else entirely and must
+    // not eat a class's slot.
+    rooms = [...otherRooms(LIMIT - 1), ...Array.from({ length: 20 }, (_, i) => ({ name: `other-${i}` }))];
+    await expect(start()).resolves.toBeTruthy();
+  });
+
+  /**
+   * Fails OPEN. If LiveKit cannot be listed we do not know the number, and
+   * guessing "too many" would close the product over a monitoring blip.
+   */
+  it("allows the class when it cannot count at all", async () => {
+    roomsFail = true;
+    await expect(start()).resolves.toBeTruthy();
+    expect(calls).toContain("createDispatch");
   });
 });

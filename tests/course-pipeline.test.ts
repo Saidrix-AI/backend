@@ -108,7 +108,7 @@ describe("chapter expansion", () => {
     );
     await expandChapters(outline(), brief, deps);
 
-    const firstUser = JSON.stringify(create.mock.calls[0]![0].messages);
+    const firstUser = JSON.stringify(create.mock.calls[0]![0]);
     expect(firstUser).toContain("Syntax, variables, types and control flow.");
     expect(firstUser).toContain("do not teach these");
     expect(firstUser).toContain("Pandas");
@@ -124,7 +124,7 @@ describe("chapter expansion", () => {
     );
     await expandChapters(outline(), brief, deps);
 
-    const repair = JSON.stringify(create.mock.calls.map((c) => c[0].messages));
+    const repair = JSON.stringify(create.mock.calls.map((c) => c[0]));
     // On truncation the writer is told to shorten prose and stay within its lesson
     // budget — never to expand. (It must not be told to write MORE.)
     expect(repair).toContain("stay within the lesson budget");
@@ -204,7 +204,7 @@ describe("project planner", () => {
 
     const ordered = await planProjects(ctx, deps);
     expect(ordered).toHaveLength(9);
-    const repair = JSON.stringify(create.mock.calls[1]![0].messages);
+    const repair = JSON.stringify(create.mock.calls[1]![0]);
     expect(repair).toContain("only 3 projects");
   });
 

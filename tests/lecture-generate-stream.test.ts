@@ -39,8 +39,13 @@ function cannedLecture(): MadeLecture {
     title: "Loops in Python",
     language: "en",
     kind: "concept",
-    outline: [{ id: 1, title: "Why loops", duration: "3:00" }],
-    blocks: [{ id: "b1", type: "heading", topicId: 1, text: "Why loops" }],
+    outline: [
+      { id: 1, title: "Why loops", duration: "3:00" },
+      { id: 2, title: "More", duration: "3:00" },
+    ],
+    sections: [
+      { id: "s1", topicId: 1, title: "Why loops", kind: "theory", blocks: [{ id: "b1", type: "paragraph", text: "Why loops" }] },
+    ],
   };
 }
 
@@ -109,10 +114,12 @@ describe("POST /api/lectures/:lessonId/generate/stream", () => {
   it("streams every pipeline stage in order, then a done event carrying the lecture", async () => {
     mockMake.mockImplementation(async (_ctx, _deps, onProgress) => {
       onProgress?.({ stage: "planning" });
-      onProgress?.({ stage: "planned", topics: 1, easyBlocks: 1, svgBlocks: 0 });
+      onProgress?.({ stage: "planned", topics: 1, sections: 1 });
       onProgress?.({ stage: "topic", status: "start", index: 0, total: 1, title: "Why loops" });
       onProgress?.({ stage: "topic", status: "done", index: 0, total: 1, title: "Why loops" });
       onProgress?.({ stage: "assembling" });
+      onProgress?.({ stage: "quiz", status: "start" });
+      onProgress?.({ stage: "quiz", status: "done" });
       return cannedLecture();
     });
 
@@ -122,7 +129,7 @@ describe("POST /api/lectures/:lessonId/generate/stream", () => {
 
     const events = parseSse(res.text);
     const progress = events.filter((e) => e.type === "progress").map((e) => (e.event as LectureProgressEvent).stage);
-    expect(progress).toEqual(["planning", "planned", "topic", "topic", "assembling"]);
+    expect(progress).toEqual(["planning", "planned", "topic", "topic", "assembling", "quiz", "quiz"]);
 
     const done = events.at(-1)!;
     expect(done).toMatchObject({ type: "done", cached: false });

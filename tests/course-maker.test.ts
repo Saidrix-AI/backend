@@ -1,7 +1,12 @@
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
-import type OpenAI from "openai";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BaseMessage, ToolMessage } from "@langchain/core/messages";
+import {
+  fakeDeps as sharedFakeDeps,
+  textResponse,
+  toolCallResponse as sharedToolCallResponse,
+} from "./helpers/fakeLlm.js";
 import { buildToolset } from "../src/agents/tools/registry.js";
 import { courseIdSuffix, dedupeTitle, slugify, toCourseInput } from "../src/agents/course-maker/ids.js";
 import {
@@ -317,32 +322,11 @@ describe("generator repair loop (real implementation, fake client)", () => {
 
   const brief = { objective: "Python for data analysis", withProjects: true } as const;
 
-  function toolCallResponse(args: unknown, finishReason = "tool_calls") {
-    return {
-      choices: [
-        {
-          message: {
-            content: null,
-            tool_calls: [
-              {
-                id: "call_1",
-                type: "function",
-                function: { name: "emit_course", arguments: JSON.stringify(args) },
-              },
-            ],
-          },
-          finish_reason: finishReason,
-        },
-      ],
-    };
-  }
+  /** emit_course is the only tool this generator ever calls. */
+  const toolCallResponse = (args: unknown, finishReason = "tool_calls") =>
+    sharedToolCallResponse("emit_course", args, finishReason);
 
-  function fakeDeps(...responses: unknown[]) {
-    const create = vi.fn();
-    for (const r of responses) create.mockResolvedValueOnce(r);
-    const client = { chat: { completions: { create } } } as unknown as OpenAI;
-    return { deps: { client, model: "fake/model" }, create };
-  }
+  const fakeDeps = sharedFakeDeps;
 
   it("repairs an invalid structure once and succeeds", async () => {
     const { deps, create } = fakeDeps(
@@ -352,32 +336,44 @@ describe("generator repair loop (real implementation, fake client)", () => {
     const payload = await realGenerate(brief, [], deps);
     expect(payload.title).toBe("Data Analysis with Python");
     expect(create).toHaveBeenCalledTimes(2);
-    const secondMessages = create.mock.calls[1]![0].messages as { role: string; content?: string }[];
-    const toolMsg = secondMessages.find((m) => m.role === "tool");
+    const repair = create.mock.calls[1]![0] as BaseMessage[];
+    const toolMsg = repair.find((m) => m._getType() === "tool") as ToolMessage | undefined;
     expect(toolMsg?.content).toContain("problems");
+    // Load-bearing, not decoration: qwen3.8-max 500s on a tool message with no
+    // function name, which is what moved this runner onto LangChain.
+    expect(toolMsg?.name).toBe("emit_course");
   });
 
   it("repairs a plain-text (no tool call) response via a user correction", async () => {
     const { deps, create } = fakeDeps(
-      { choices: [{ message: { content: "Here is a course idea..." }, finish_reason: "stop" }] },
+      textResponse("Here is a course idea..."),
       toolCallResponse(cannedPayload()),
     );
     const payload = await realGenerate(brief, [], deps);
     expect(payload.chapters).toHaveLength(2);
-    const secondMessages = create.mock.calls[1]![0].messages as { role: string; content?: string }[];
-    expect(secondMessages.at(-1)?.role).toBe("user");
-    expect(secondMessages.at(-1)?.content).toContain("emit_course");
+    const repair = create.mock.calls[1]![0] as BaseMessage[];
+    expect(repair.at(-1)?._getType()).toBe("human");
+    expect(repair.at(-1)?.content).toContain("emit_course");
   });
 
-  it("treats a truncated response as repairable", async () => {
+  /*
+   * Folding this generator into the shared runner changed the truncation repair
+   * for the better. It used to echo the truncated attempt back as a tool
+   * message — thousands of tokens of the model's own half-finished sprawl,
+   * which mostly invited more of the same. The shared runner restarts from the
+   * original prompt with a firmer size instruction instead.
+   */
+  it("restarts clean on a truncated response instead of echoing it", async () => {
     const { deps, create } = fakeDeps(
       toolCallResponse(cannedPayload(), "length"),
       toolCallResponse(cannedPayload()),
     );
     await realGenerate(brief, [], deps);
-    const secondMessages = create.mock.calls[1]![0].messages as { role: string; content?: string }[];
-    const toolMsg = secondMessages.find((m) => m.role === "tool");
-    expect(toolMsg?.content).toContain("truncated");
+    const repair = create.mock.calls[1]![0] as BaseMessage[];
+    expect(repair.map((m) => m._getType())).toEqual(["system", "human"]);
+    const restated = String(repair.at(-1)?.content);
+    expect(restated).toContain("far too long");
+    expect(restated).toContain("cut each brief to two short sentences");
   });
 
   it("throws ApiError 502 when both attempts fail", async () => {
@@ -417,7 +413,7 @@ describe("multi-course learning path coordination", () => {
 
   it("propose_courses saves an ordered path and returns its pathId", async () => {
     await LearningPathModel.deleteMany({});
-    const outcome = await run("propose_courses", { goal: "Become a Data Analyst", courses: pathCourses });
+    const outcome = await run("propose_courses", { goal: "Become a Data Analyst", breadth: "subject", courses: pathCourses });
     expect(outcome.ok).toBe(true);
 
     const path = await LearningPathModel.findOne({ userId: userA }).lean();
@@ -431,7 +427,7 @@ describe("multi-course learning path coordination", () => {
 
   it("generate_course with pathId+order stamps the course and feeds sibling scope as prerequisites", async () => {
     await LearningPathModel.deleteMany({});
-    await run("propose_courses", { goal: "Become a Data Analyst", courses: pathCourses });
+    await run("propose_courses", { goal: "Become a Data Analyst", breadth: "subject", courses: pathCourses });
     const path = await LearningPathModel.findOne({ userId: userA }).lean();
     const pathId = String(path!._id);
 
@@ -459,7 +455,7 @@ describe("multi-course learning path coordination", () => {
 
   it("auto-links a course to a matching proposed path even when no pathId is passed", async () => {
     await LearningPathModel.deleteMany({});
-    await run("propose_courses", { goal: "Become a Data Analyst", courses: pathCourses });
+    await run("propose_courses", { goal: "Become a Data Analyst", breadth: "subject", courses: pathCourses });
     const path = await LearningPathModel.findOne({ userId: userA }).lean();
 
     mockGenerate.mockImplementation(async () => ({ ...cannedPayload(), title: "Pandas for Analysis" }));

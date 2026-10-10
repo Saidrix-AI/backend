@@ -1,3 +1,4 @@
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type OpenAI from "openai";
 import { describe, expect, it, vi } from "vitest";
 import { runForcedToolCall } from "../src/agents/shared/forcedToolCall.js";
@@ -29,12 +30,20 @@ const base = {
 };
 
 /** A response cut off before the tool call ever materialised. */
-const truncatedNoCall = { choices: [{ finish_reason: "length", message: { content: null } }] };
+const truncatedNoCall = new AIMessage({ content: "", response_metadata: { finish_reason: "length" } });
 /** A response cut off mid-arguments, so a partial tool call survives. */
 const truncatedPartialCall = toolCallResponse("emit_thing", { value: "x" }, "length");
 
+/** The messages handed to invoke() on the given call. */
+const sentTo = (create: ReturnType<typeof vi.fn>, callIndex: number): BaseMessage[] =>
+  (create.mock.calls[callIndex]?.[0] ?? []) as BaseMessage[];
+
 const sentText = (create: ReturnType<typeof vi.fn>, callIndex: number) =>
-  JSON.stringify(create.mock.calls[callIndex]?.[0]?.messages ?? []);
+  JSON.stringify(sentTo(create, callIndex));
+
+/** LangChain message kinds: system | human | ai | tool. */
+const kinds = (create: ReturnType<typeof vi.fn>, callIndex: number) =>
+  sentTo(create, callIndex).map((m) => m._getType());
 
 describe("runForcedToolCall truncation handling", () => {
   /*
@@ -58,9 +67,8 @@ describe("runForcedToolCall truncation handling", () => {
     const { deps, create } = fakeDeps(truncatedPartialCall, toolCallResponse("emit_thing", { value: "ok" }));
     await expect(runForcedToolCall({ ...base, deps })).resolves.toBe("ok");
 
-    const repair = JSON.parse(sentText(create, 1)) as { role: string }[];
     // system + user only — no assistant echo, no tool message.
-    expect(repair.map((m) => m.role)).toEqual(["system", "user"]);
+    expect(kinds(create, 1)).toEqual(["system", "human"]);
   });
 
   it("still echoes the tool call for an ordinary validation failure", async () => {
@@ -70,8 +78,7 @@ describe("runForcedToolCall truncation handling", () => {
     );
     await expect(runForcedToolCall({ ...base, deps })).resolves.toBe("ok");
 
-    const repair = JSON.parse(sentText(create, 1)) as { role: string }[];
-    expect(repair.map((m) => m.role)).toEqual(["system", "user", "assistant", "tool"]);
+    expect(kinds(create, 1)).toEqual(["system", "human", "ai", "tool"]);
     expect(sentText(create, 1)).toContain("value must be a string");
   });
 
@@ -86,8 +93,8 @@ describe("runForcedToolCall truncation handling", () => {
       toolCallResponse("emit_thing", { value: "ok" }),
     );
     await runForcedToolCall({ ...base, deps, timeoutMs: 120_000 });
-    expect(create.mock.calls[0]?.[1]).toMatchObject({ timeout: 120_000 });
-    expect(create.mock.calls[1]?.[1]).toMatchObject({ timeout: 90_000 });
+    expect(create.mock.calls[0]?.[1]).toMatchObject({ options: { timeout: 120_000 } });
+    expect(create.mock.calls[1]?.[1]).toMatchObject({ options: { timeout: 90_000 } });
   });
 
   // Asserted against env rather than a literal: the default is deliberately
@@ -96,6 +103,6 @@ describe("runForcedToolCall truncation handling", () => {
   it("falls back to the default timeout when the caller sets none", async () => {
     const { deps, create } = fakeDeps(toolCallResponse("emit_thing", { value: "ok" }));
     await runForcedToolCall({ ...base, deps });
-    expect(create.mock.calls[0]?.[1]).toMatchObject({ timeout: env.LLM_TIMEOUT_MS });
+    expect(create.mock.calls[0]?.[1]).toMatchObject({ options: { timeout: env.LLM_TIMEOUT_MS } });
   });
 });

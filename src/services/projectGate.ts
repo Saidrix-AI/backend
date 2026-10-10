@@ -19,6 +19,8 @@ export interface ProjectLock {
   lockReason: string;
   /** 1-based chapter that must be finished, or null for a whole-course gate. */
   requiresChapter: number | null;
+  /** The lesson that opens it, when the gate is a single lesson rather than a chapter. */
+  requiresLessonId?: string;
 }
 
 const OPEN: ProjectLock = { locked: false, lockReason: "", requiresChapter: null };
@@ -35,10 +37,37 @@ function allDone(lessonIds: string[], done: Set<string>): boolean {
   return lessonIds.every((id) => done.has(id));
 }
 
+// A plain array of chapters rather than mongoose's DocumentArray: `chapters`
+// below is `course?.chapters ?? []`, whose type is the union of the two, and
+// only the element shape matters to anything here.
+type ChapterList = readonly Chapters[number][];
+
+/** The topic title behind a lessonId, for the sentence the student reads. */
+function lessonTitle(chapters: ChapterList, lessonId: string): string {
+  for (const chapter of chapters) {
+    for (const module of chapter.modules ?? []) {
+      for (const topic of module.topics ?? []) {
+        if (topic.lessonId === lessonId) return topic.title;
+      }
+    }
+  }
+  return "the lesson that teaches it";
+}
+
+/** 1-based chapter a lessonId sits in, or null. */
+function chapterOf(chapters: ChapterList, lessonId: string): number | null {
+  for (let i = 0; i < chapters.length; i++) {
+    if (chapterLessonIds(chapters[i]!).includes(lessonId)) return i + 1;
+  }
+  return null;
+}
+
 export interface GatedProject {
   courseId?: string;
   chapterIndex?: number;
   difficulty?: string;
+  /** The one lesson that opens it, when the planner knows it. Empty = chapter rule. */
+  unlockLessonId?: string;
 }
 
 /**
@@ -69,6 +98,28 @@ export function projectLock(
       lockReason: "Finish the course to unlock this capstone project",
       requiresChapter: null,
     };
+  }
+
+  // The precise gate, when the planner knew which lesson teaches the skill.
+  //
+  // A chapter gate is the blunt version of the same idea: "finish all nine
+  // lessons of chapter 2" when the project only needs the three that taught it.
+  // Checked BEFORE the chapter rule and only when the lesson is real — a
+  // lessonId that no longer exists (the course was regenerated, the topic was
+  // renamed) would otherwise lock the project forever, and unreachable is the
+  // one outcome this whole module is written to avoid.
+  const unlockLessonId = project.unlockLessonId?.trim();
+  if (unlockLessonId) {
+    const all = new Set(chapters.flatMap(chapterLessonIds));
+    if (all.has(unlockLessonId)) {
+      if (done.has(unlockLessonId)) return OPEN;
+      return {
+        locked: true,
+        lockReason: `Finish "${lessonTitle(chapters, unlockLessonId)}" to unlock this project`,
+        requiresChapter: chapterOf(chapters, unlockLessonId),
+        requiresLessonId: unlockLessonId,
+      };
+    }
   }
 
   const idx = project.chapterIndex ?? -1;

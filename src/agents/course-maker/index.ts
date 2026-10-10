@@ -4,7 +4,7 @@ import { assertCanGenerateCourse, recordCourseGenerated } from "../../services/q
 import { ApiError } from "../../utils/apiError.js";
 import { createCourseSchema } from "../../validation/course.schema.js";
 import { planProjects, type OrderedProject } from "../project-planner/index.js";
-import { expandChapters, enforceLessonCap, countLessons } from "./expand.js";
+import { expandChapters, enforceLessonCap, countLessons, insertSetupLesson } from "./expand.js";
 import { generateCoursePayload } from "./generator.js";
 import { courseIdSuffix, dedupeTitle, toCourseInput } from "./ids.js";
 import { profileLines } from "./prompt.js";
@@ -54,6 +54,26 @@ export interface MadeCourse {
  * Throws ApiError only before/at course creation — every project failure
  * degrades into `projectErrors` so a good course is never lost.
  */
+/**
+ * The lessonId the planner's "unlock after lesson N of chapter M" refers to.
+ *
+ * Returns "" — meaning "fall back to the chapter rule" — for every case where
+ * the answer would be a guess: no chapter, no such lesson, or the planner
+ * saying 0. That fallback is the gate the project would have had anyway, so a
+ * bad number costs precision and never reachability.
+ */
+function resolveUnlockLesson(
+  course: { chapters?: { modules?: { topics?: { lessonId: string }[] }[] }[] },
+  chapterIndex: number,
+  topicNumber: number,
+): string {
+  if (chapterIndex < 0 || topicNumber < 1) return "";
+  const chapter = (course.chapters ?? [])[chapterIndex];
+  if (!chapter) return "";
+  const lessons = (chapter.modules ?? []).flatMap((m) => m.topics ?? []);
+  return lessons[topicNumber - 1]?.lessonId ?? "";
+}
+
 export async function makeCourse(
   userId: string,
   brief: CourseBrief,
@@ -75,24 +95,39 @@ export async function makeCourse(
   gen.title = dedupeTitle(gen.title, existingTitles);
 
   const projectErrors: string[] = [];
-  const [written, planned] = await Promise.all([
-    expandChapters(gen, brief),
-    brief.withProjects
-      ? planProjects({
-          title: gen.title,
-          desc: gen.desc,
-          level: gen.level,
-          objective: brief.objective,
-          chapters: gen.chapters.map((ch) => ({ title: ch.title, covers: ch.brief })),
-          profile: profileLines(brief).join(" ") || undefined,
-        }).catch((err: unknown) => {
-          // eslint-disable-next-line no-console
-          console.warn("[course-maker] project planning failed:", err);
-          projectErrors.push("the project plan could not be generated");
-          return [] as OrderedProject[];
-        })
-      : Promise.resolve([] as OrderedProject[]),
-  ]);
+  const written = await expandChapters(gen, brief);
+  // Before the project planner, so its "unlock after lesson N of chapter 1"
+  // counts the setup lesson the student actually sees first.
+  insertSetupLesson(gen, brief, written);
+
+  // The project planner runs AFTER the chapters are written, not alongside them.
+  //
+  // It used to run in parallel, which saved one call's wall clock on a course
+  // generation that already takes a minute or two. The cost was that it could
+  // only see chapter titles — so every project was gated on a whole chapter,
+  // and a student who could have started building after three lessons sat
+  // through nine first. Seeing the lessons is what lets a project name the one
+  // that opens it, and that is worth more than fifteen seconds on a one-time
+  // operation the student is already watching a progress screen for.
+  const planned = brief.withProjects
+    ? await planProjects({
+        title: gen.title,
+        desc: gen.desc,
+        level: gen.level,
+        objective: brief.objective,
+        chapters: gen.chapters.map((ch, i) => ({
+          title: ch.title,
+          covers: ch.brief,
+          topics: (written[i]?.modules ?? []).flatMap((m) => m.topics.map((t) => t.title)),
+        })),
+        profile: profileLines(brief).join(" ") || undefined,
+      }).catch((err: unknown) => {
+        // eslint-disable-next-line no-console
+        console.warn("[course-maker] project planning failed:", err);
+        projectErrors.push("the project plan could not be generated");
+        return [] as OrderedProject[];
+      })
+    : ([] as OrderedProject[]);
 
   // Hard guarantee the "< 60 lessons" cap even if a chapter writer overshot its
   // budget: trim least-critical trailing lessons from the largest chapters.
@@ -140,6 +175,11 @@ export async function makeCourse(
           thumb: gen.thumb,
           courseId: String(course._id),
           chapterIndex: p.chapterIndex,
+          // Resolved against the SAVED course, because lessonIds are minted
+          // server-side inside createCourse — nothing before this point knows
+          // them, including the plan that asked for one.
+          unlockLessonId: resolveUnlockLesson(course, p.chapterIndex, p.unlockAfterTopic),
+          submitWithinDays: p.submitWithinDays,
           order: p.order,
           difficulty: p.difficulty,
           estimatedHours: p.estimatedHours,

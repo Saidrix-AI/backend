@@ -1,3 +1,4 @@
+import { AIMessageChunk } from "@langchain/core/messages";
 import { describe, expect, it, vi } from "vitest";
 import type { RegisteredTool } from "../src/agents/tools/types.js";
 
@@ -20,6 +21,9 @@ import type { RegisteredTool } from "../src/agents/tools/types.js";
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
+  // tool_choice rides on bindTools now, not on the streamed request body, so
+  // the assertions about forcing/disabling tools read this spy.
+  bindTools: vi.fn(),
   deleteRun: vi.fn(),
   deleteManyRun: vi.fn(),
 }));
@@ -66,27 +70,24 @@ vi.mock("../src/agents/chat-agent/router.js", async (importOriginal) => {
   return { ...actual, classifyCourseIntent: vi.fn().mockResolvedValue(null) };
 });
 
-/** One streamed chunk carrying a full batch of tool_calls in a single delta —
+/** One streamed chunk carrying a full batch of tool calls in a single delta —
  *  valid because the accumulator in stream.ts just concatenates per-index
  *  strings, and a one-shot chunk already has everything in one piece. */
 function toolCallChunk(calls: Array<{ id: string; name: string; args: string }>) {
-  return {
-    choices: [
-      {
-        delta: {
-          tool_calls: calls.map((c, index) => ({
-            index,
-            id: c.id,
-            function: { name: c.name, arguments: c.args },
-          })),
-        },
-      },
-    ],
-  };
+  return new AIMessageChunk({
+    content: "",
+    tool_call_chunks: calls.map((c, index) => ({
+      index,
+      id: c.id,
+      name: c.name,
+      args: c.args,
+      type: "tool_call_chunk" as const,
+    })),
+  });
 }
 
 function contentChunk(text: string) {
-  return { choices: [{ delta: { content: text } }] };
+  return new AIMessageChunk({ content: text });
 }
 
 function asyncIterableOf(chunks: unknown[]) {
@@ -97,14 +98,14 @@ function asyncIterableOf(chunks: unknown[]) {
   };
 }
 
+// stream.ts streams through LangChain now: bindTools(...).stream(messages).
+// Both shapes point at the same spy, since a turn with no tools registered
+// streams straight off the model.
 vi.mock("../src/agents/llm.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/agents/llm.js")>();
   return {
     ...actual,
-    getOpenAICompatClient: () => ({
-      client: { chat: { completions: { create: mocks.create } } },
-      model: "test-model",
-    }),
+    getChatModelFor: () => ({ stream: mocks.create, bindTools: mocks.bindTools }),
   };
 });
 
@@ -120,6 +121,7 @@ async function collect(message: string) {
 
 function reset() {
   mocks.create.mockReset();
+  mocks.bindTools.mockReset().mockImplementation(() => ({ stream: mocks.create }));
   mocks.deleteRun.mockReset().mockImplementation(async (_ctx, args: Record<string, unknown>) => ({
     ok: true,
     changed: "routine" as const,
@@ -210,7 +212,7 @@ describe("streamChatAgent destructive-call cap", () => {
     await collect("delete everything");
 
     expect(mocks.create).toHaveBeenCalledTimes(2);
-    const followUp = mocks.create.mock.calls[1]![0] as { tool_choice?: unknown };
+    const followUp = mocks.bindTools.mock.calls[1]![1] as { tool_choice?: unknown };
     expect(followUp.tool_choice).toBe("none");
   });
 

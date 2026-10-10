@@ -63,8 +63,16 @@ app.post(
 // other route (auth, etc.) is capped tight to limit DoS amplification.
 const jsonSmall = express.json({ limit: "1mb" });
 const jsonLarge = express.json({ limit: "20mb" });
+// The whiteboard snapshot the voice agent saves: up to 2000 elements, the
+// student's ink strokes included (board.service.ts caps elements at ~3MB).
+const jsonBoard = express.json({ limit: "4mb" });
+const BOARD_SAVE = /^\/api\/lectures\/[^/]+\/board$/;
 app.use((req, res, next) =>
-  (req.path.startsWith("/api/chat") ? jsonLarge : jsonSmall)(req, res, next),
+  (req.path.startsWith("/api/chat") ? jsonLarge : BOARD_SAVE.test(req.path) ? jsonBoard : jsonSmall)(
+    req,
+    res,
+    next,
+  ),
 );
 
 if (process.env.NODE_ENV !== "test") {

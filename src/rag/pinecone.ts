@@ -47,6 +47,16 @@ export interface VectorRecord {
   metadata: VectorMetadata;
 }
 
+/** Drops every vector in our namespace — used before re-ingesting a new corpus. */
+export async function deleteAllVectors(): Promise<void> {
+  try {
+    await namespaced().deleteAll();
+  } catch (err) {
+    // An empty or never-written namespace 404s; that is already the goal state.
+    if (!/404|not found/i.test(err instanceof Error ? err.message : String(err))) throw err;
+  }
+}
+
 export async function upsertVectors(records: VectorRecord[]): Promise<void> {
   if (records.length === 0) return;
   const index = namespaced();

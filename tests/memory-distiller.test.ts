@@ -1,6 +1,6 @@
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
-import type OpenAI from "openai";
+import type { ChatOpenAI } from "@langchain/openai";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DISTILL_EVERY,
@@ -145,7 +145,7 @@ describe("failure semantics", () => {
     const conversation = await seedConversation(DISTILL_EVERY);
     const create = vi.fn().mockRejectedValue(new Error("upstream down"));
     const deps = {
-      client: { chat: { completions: { create } } } as unknown as OpenAI,
+      chat: { bindTools: () => ({ invoke: create }) } as unknown as ChatOpenAI,
       model: "fake/model",
     };
 
@@ -162,7 +162,7 @@ describe("failure semantics", () => {
     const conversation = await seedConversation(DISTILL_EVERY);
     const failing = vi.fn().mockRejectedValue(new Error("upstream down"));
     await distillConversation(conversation, {
-      client: { chat: { completions: { create: failing } } } as unknown as OpenAI,
+      chat: { bindTools: () => ({ invoke: failing }) } as unknown as ChatOpenAI,
       model: "fake/model",
     });
 
