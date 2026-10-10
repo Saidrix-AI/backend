@@ -232,10 +232,11 @@ const createPathCourses: RegisteredTool = {
   run: async (ctx, args) => {
     const parsed = createPathArgs.safeParse(args);
     if (!parsed.success) return invalidArgs("Couldn't create courses", parsed.error);
-    const path = await (parsed.data.pathId
-      ? getLearningPath(ctx.userId, parsed.data.pathId)
-      : latestLearningPath(ctx.userId)
-    ).catch(() => null);
+    // A pathId the model misremembered (or invented) falls back to the latest
+    // proposal, which is what "create these courses" almost always refers to.
+    const path =
+      (parsed.data.pathId ? await getLearningPath(ctx.userId, parsed.data.pathId).catch(() => null) : null) ??
+      (await latestLearningPath(ctx.userId).catch(() => null));
     if (!path) {
       console.warn(`[create_path_courses] no learning path found (pathId=${parsed.data.pathId ?? "latest"})`);
       return {
@@ -245,9 +246,22 @@ const createPathCourses: RegisteredTool = {
       };
     }
     const pathId = String(path._id);
-    const orders = [...new Set(parsed.data.orders)]
+    let orders = [...new Set(parsed.data.orders)]
       .filter((o) => o <= path.courses.length)
       .sort((a, b) => a - b);
+    // Every number out of range: with a one-course path there is only one thing
+    // the student can have meant.
+    if (orders.length === 0 && path.courses.length === 1) orders = [1];
+    if (orders.length === 0) {
+      console.warn(
+        `[create_path_courses] orders ${parsed.data.orders.join(",")} are outside path ${pathId} (${path.courses.length} courses)`,
+      );
+      return {
+        ok: false,
+        label: "Couldn't create courses: those step numbers are not in the path",
+        modelText: `The path has ${path.courses.length} courses, numbered 1-${path.courses.length}. Call create_path_courses again with numbers from that range.`,
+      };
+    }
 
     const done: string[] = [];
     const failed: string[] = [];
@@ -278,7 +292,7 @@ const createPathCourses: RegisteredTool = {
       ...(ok ? { changed: "course" as const } : {}),
       label: ok
         ? `${done.length} course${done.length === 1 ? "" : "s"} created${lessons ? ` (${lessons} lessons)` : ""}`
-        : "Couldn't create courses",
+        : `Couldn't create courses${failed.length ? `: ${failureReason(failed[0]!)}` : ""}`,
       modelText: [
         done.length ? `Done: ${done.join(" | ")}` : "",
         failed.length ? `Failed: ${failed.join(" | ")}` : "",
@@ -290,5 +304,11 @@ const createPathCourses: RegisteredTool = {
     };
   },
 };
+
+/** The reason part of a `"Title": reason` failure, short enough for the action label. */
+function failureReason(entry: string): string {
+  const reason = entry.replace(/^"[^"]*":\s*/, "");
+  return reason.length > 160 ? `${reason.slice(0, 157)}...` : reason;
+}
 
 export const courseMakerTools = [generateCourse, proposeCourses, createPathCourses];
