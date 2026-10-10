@@ -94,7 +94,12 @@ export const sectionEmissionItemSchema = z.object({
   title: line(120),
   kind: z.enum(SECTION_KINDS).catch("theory"),
   blocks: z.array(writerBlockSchema).min(1).max(8),
-  tutor: sectionTutorSchema,
+  /**
+   * No longer written: the lecture is content, and the live tutor plans how to
+   * teach it at class start (voice-service class_plan.py). Still accepted, so a
+   * model that sends one anyway is not rejected for it.
+   */
+  tutor: sectionTutorSchema.optional().catch(undefined),
 });
 export type SectionEmissionItem = z.infer<typeof sectionEmissionItemSchema>;
 
@@ -251,7 +256,7 @@ export const emitSectionsTool: OpenAI.Chat.ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "emit_sections",
-    description: "Write the planned sections of ONE topic: what the student sees, and how the tutor teaches it. Call exactly once.",
+    description: "Write the planned sections of ONE topic: what the student sees on the page. Call exactly once.",
     parameters: {
       type: "object",
       required: ["sections"],
@@ -262,7 +267,7 @@ export const emitSectionsTool: OpenAI.Chat.ChatCompletionFunctionTool = {
           maxItems: 6,
           items: {
             type: "object",
-            required: ["title", "kind", "blocks", "tutor"],
+            required: ["title", "kind", "blocks"],
             properties: {
               title: { type: "string" },
               kind: { type: "string", enum: [...SECTION_KINDS], description: sectionKindDescription },
@@ -272,68 +277,7 @@ export const emitSectionsTool: OpenAI.Chat.ChatCompletionFunctionTool = {
                 maxItems: 8,
                 items: blockItemSchema,
                 description:
-                  "What the student reads: professional textbook content. No tips, hints, 'remember', 'pro tip' or suggestion asides — those belong in tutor.explain.",
-              },
-              tutor: {
-                type: "object",
-                required: ["goal", "explain", "check"],
-                properties: {
-                  goal: { type: "string", description: "What the student can DO after this section" },
-                  explain: {
-                    type: "array",
-                    minItems: 1,
-                    maxItems: 8,
-                    items: { type: "string" },
-                    description: "The explanation as POINTS the tutor says in its own words — the why, the intuition, the walkthrough.",
-                  },
-                  deeper: {
-                    type: "array",
-                    maxItems: 6,
-                    items: { type: "string" },
-                    description: "For a student who already knew the basics: what they do NOT know yet.",
-                  },
-                  analogy: { type: "string" },
-                  misconceptions: {
-                    type: "array",
-                    maxItems: 4,
-                    items: {
-                      type: "object",
-                      required: ["mistake", "whatBreaks", "correction"],
-                      properties: {
-                        mistake: { type: "string" },
-                        whatBreaks: { type: "string" },
-                        correction: { type: "string" },
-                      },
-                    },
-                  },
-                  ask: {
-                    type: "object",
-                    required: ["question", "expectedPoints", "worth"],
-                    description: "Optional opening question to find out what they already know.",
-                    properties: {
-                      question: { type: "string" },
-                      expectedPoints: { type: "array", items: { type: "string" } },
-                      worth: {
-                        type: "string",
-                        enum: ["ask", "skip"],
-                        description: "'ask' only if a learner at this level plausibly knows something about it already.",
-                      },
-                    },
-                  },
-                  check: {
-                    type: "object",
-                    required: ["mustShow", "mode", "weight"],
-                    properties: {
-                      mustShow: { type: "string", description: "The understanding bar — a rubric, not a question" },
-                      mode: { type: "string", enum: ["verbal", "code"] },
-                      weight: { type: "string", enum: ["key", "light"] },
-                    },
-                  },
-                  demo: {
-                    type: "string",
-                    description: "practical/canvas only: what the live demonstration must make visible while it runs or is drawn.",
-                  },
-                },
+                  "What the student reads: professional textbook content. No tips, hints, 'remember', 'pro tip' or suggestion asides — the live tutor does the explaining.",
               },
             },
           },

@@ -62,7 +62,7 @@ export function buildOutlineUserMessage(ctx: LessonContext, blueprint: Blueprint
 }
 
 export function buildSectionWriterSystemPrompt(kind: LessonKind): string {
-  return `You write ONE topic of a lecture for Saidrix AI Tutor: its planned sections, each with what the student sees on the page and how the live AI tutor teaches it.
+  return `You write ONE topic of a lecture for Saidrix AI Tutor: its planned sections — what the student sees on the page.
 
 ${NO_FILLER}
 
@@ -82,14 +82,7 @@ PAGE CONTENT (blocks) — 1-8 per section, written for someone seeing this for t
 ${kind === "setup" ? "- checklist: the final topic's last section ends with one — checks with the exact command and expected output." : "- Do not write a quiz; it is written separately."}
 Do not write headings — the section title is shown as the heading.
 
-TUTOR (never shown to the student):
-- goal: what they can do afterwards.
-- explain: the explanation as points the tutor says in its own words — the why, the intuition, how to read the code or diagram. This is where the teaching lives.
-- deeper: what a student who already knew the basics does not know yet.
-- analogy (optional), misconceptions (only real ones, with what breaks and the correction).
-- ask (optional): an opening question with the points a knowing student would mention; worth "ask" only when a learner at this level plausibly knows something already.
-- check: the understanding bar as a rubric; weight "key" for load-bearing ideas, "light" otherwise.
-- demo: for practical/canvas — what the student must notice while it runs or is drawn.
+The page is content only. You do not script the class: the live AI tutor reads these sections when the class starts and decides itself how to teach them — what to explain aloud, when to code in the Code Lab, when to draw, what to ask.
 
 Use the shared worked example exactly as named. Teach only your topic; the full outline is given so you do not repeat a neighbour. Where a "CURRENT AS OF TODAY" section exists it overrides your memory; never invent a version number. Write every text field in the lecture language.`;
 }
