@@ -20,6 +20,24 @@ const projectSchema = new Schema(
     // Where this project sits in its course, written by the project planner.
     // -1 / 0 / "" mean "not planned" (manually created or pre-planner projects).
     chapterIndex: { type: Number, default: -1 },
+    /**
+     * The exact lesson that opens this project, when the planner knows it.
+     *
+     * A chapter gate is the blunt version of the same idea: "finish all nine
+     * lessons of chapter 2" when the project only needs the three that taught
+     * the skill. A lessonId gate lets a project open the moment the student can
+     * actually do it. Empty falls back to the chapter rule, so nothing planned
+     * before this field existed changes behaviour — see services/projectGate.ts.
+     */
+    unlockLessonId: { type: String, default: "" },
+    /**
+     * Days from unlock to submission. 0 means no deadline.
+     *
+     * Stored as a duration rather than a date because the clock starts when the
+     * student reaches the unlocking lesson, which is different for every
+     * student. The absolute date is stamped on their ProjectProgress row.
+     */
+    submitWithinDays: { type: Number, default: 0, min: 0 },
     order: { type: Number, default: 0 },
     difficulty: { type: String, enum: ["starter", "practice", "capstone", ""], default: "" },
     estimatedHours: { type: Number, default: 0 },

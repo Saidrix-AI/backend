@@ -1,4 +1,5 @@
 import { Types } from "mongoose";
+import { formatTemplate, resolveRef, type CurriculumRef } from "../rag/curriculum.js";
 import { decideProbe, type IntakeAnswer } from "../agents/intake/director.js";
 import { buildIntakeReport, type IntakeReport } from "../agents/intake/report.js";
 import type { TopicKind } from "../agents/intake/schema.js";
@@ -72,6 +73,8 @@ export interface IntakeDonePayload {
 export interface IntakeContext {
   topic: string;
   objective: string;
+  /** "single" for one named topic, "multi" for a broad career/path goal. */
+  scope: "single" | "multi";
   language: Language;
   /** "Finish by: … | Daily time: …", ready to drop into a prompt. */
   timetable: string;
@@ -82,6 +85,8 @@ export interface IntakeContext {
   finishByDays: number;
   autoRoutine: boolean;
   routineTime: string;
+  /** The curriculum template the intake matched, or null. */
+  curriculum: CurriculumRef | null;
 }
 
 type Doc = LearningIntake & { _id: Types.ObjectId; save: () => Promise<unknown> };
@@ -106,6 +111,7 @@ function stateOf(doc: Doc): IntakeState {
     autoRoutine: Boolean(doc.autoRoutine),
     routineTime: doc.routineTime ?? "",
     plannedQuestions: planned,
+    curriculum: (doc.curriculum as IntakeState["curriculum"]) ?? null,
     // The plan writes both questions in one call, so either one proves it ran.
     planKnown: Boolean(planned.goal ?? planned.background),
   };
@@ -119,6 +125,7 @@ function applyPatch(doc: Doc, patch: Partial<IntakeState>): void {
   if (patch.plannedQuestions !== undefined) {
     doc.plannedQuestions = patch.plannedQuestions as unknown as typeof doc.plannedQuestions;
   }
+  if (patch.curriculum !== undefined) doc.curriculum = patch.curriculum as typeof doc.curriculum;
   if (patch.operatingSystem !== undefined) doc.operatingSystem = patch.operatingSystem;
   if (patch.tooling !== undefined) doc.tooling = patch.tooling;
   if (patch.foundation !== undefined) doc.foundation = patch.foundation;
@@ -229,6 +236,12 @@ function donePayload(doc: Doc): IntakeDonePayload {
       : "Auto-routine: NO — the student will set up their own routine, do not build one",
   );
   if (report?.summary) lines.push(`Summary: ${report.summary}`);
+  const ref = doc.curriculum as { sourcePath?: string } | null;
+  if (ref?.sourcePath) {
+    lines.push(
+      `Curriculum template: ${ref.sourcePath} — the course list comes from it; propose_courses fills it in server-side`,
+    );
+  }
 
   return {
     intakeId: String(doc._id),
@@ -371,7 +384,23 @@ export async function submitStage(
   }
 
   if (slot.interpret) {
-    applyPatch(doc, await Promise.resolve(slot.interpret(answers, stateOf(doc))));
+    const patch = await Promise.resolve(slot.interpret(answers, stateOf(doc)));
+
+    // The answer was recorded but not usable, so the intake stays exactly where
+    // it is and asks again. Deliberately AFTER the answer is pushed onto
+    // `doc.answers`: what they first said is part of the conversation, and the
+    // report reads better for having it ("asked for Nepali, took Hindi").
+    //
+    // Nothing else in the patch is applied — a re-ask means the slot could not
+    // decide anything, and half-applying it would leave the document claiming a
+    // language the student has not agreed to.
+    if (patch.reask?.length) {
+      setPending(doc, patch.reask);
+      await doc.save();
+      return stagePayload(doc, patch.reask);
+    }
+
+    applyPatch(doc, patch);
   }
 
   // The OS belongs on the learner profile, where the lecture pipeline reads it
@@ -403,12 +432,14 @@ export async function submitStage(
  */
 async function resolveProbe(userId: string, doc: Doc): Promise<void> {
   const state = stateOf(doc);
+  const match = await resolveRef(state.curriculum);
   const decision = await decideProbe({
     topic: doc.topic,
     objective: intakeObjective(doc),
     topicKind: state.topicKind,
     answers: transcript(doc),
     language: state.language,
+    ...(match ? { curriculum: formatTemplate(match) } : {}),
   });
 
   if (!decision.ask) {
@@ -618,6 +649,7 @@ export async function latestIntake(
   return {
     topic: doc.topic,
     objective: doc.objective,
+    scope: doc.scope === "multi" ? "multi" : "single",
     language: (doc.language as Language | undefined) ?? DEFAULT_LANGUAGE,
     timetable,
     goal: doc.answers
@@ -628,6 +660,7 @@ export async function latestIntake(
     dailyMinutes: doc.dailyMinutes ?? 0,
     finishByDays: doc.finishByDays ?? 0,
     autoRoutine: Boolean(doc.autoRoutine),
+    curriculum: (doc.curriculum as CurriculumRef | null) ?? null,
     routineTime: doc.routineTime ?? "",
   };
 }

@@ -2,7 +2,6 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { ChatAnthropic } from "@langchain/anthropic";
 import { ChatOpenAI } from "@langchain/openai";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import OpenAI from "openai";
 import { env } from "../config/env.js";
 import { ApiError } from "../utils/apiError.js";
 
@@ -14,12 +13,16 @@ const DEFAULT_MODELS = {
   // The -free variant cannot make tool calls (probed 2026-07-23), and every
   // agent here forces one, so the paid model is the only usable default.
   tokenrouter: "openai/gpt-5.6-luna",
+  // Free-tier gateway accounts cannot call luna; gpt-5.4-nano is the newest
+  // OpenAI model they can (probed 2026-10-09).
+  vercel: "openai/gpt-5.4-nano",
 } as const;
 
 /** OpenAI-compatible providers that route through a custom base URL + key. */
 const OPENAI_COMPAT: Partial<Record<string, { baseURL: string; key: () => string }>> = {
   openrouter: { baseURL: "https://openrouter.ai/api/v1", key: () => requireKey(env.OPENROUTER_API_KEY, "OPENROUTER_API_KEY") },
   tokenrouter: { baseURL: "https://api.tokenrouter.com/v1", key: () => requireKey(env.TOKENROUTER_API_KEY, "TOKENROUTER_API_KEY") },
+  vercel: { baseURL: "https://ai-gateway.vercel.sh/v1", key: () => requireKey(env.AI_GATEWAY_API_KEY, "AI_GATEWAY_API_KEY") },
 };
 
 function requireKey(key: string | undefined, name: string): string {
@@ -51,8 +54,9 @@ export function getChatModel(): BaseChatModel {
         apiKey: requireKey(env.GOOGLE_API_KEY, "GOOGLE_API_KEY"),
       });
     case "openrouter":
-    case "tokenrouter": {
-      // Both are OpenAI-compatible; model names are namespaced (e.g. "z-ai/glm-5.2").
+    case "tokenrouter":
+    case "vercel": {
+      // All OpenAI-compatible; model names are namespaced (e.g. "z-ai/glm-5.2").
       const compat = OPENAI_COMPAT[env.LLM_PROVIDER]!;
       return new ChatOpenAI({
         model,
@@ -98,21 +102,59 @@ export function reasoningParams(model: string): Record<string, unknown> {
 }
 
 /**
- * Returns a raw OpenAI-compatible client for streaming with reasoning tokens.
- * Only openai / openrouter expose reasoning deltas this way; other providers
- * return null and callers fall back to LangChain content-only streaming.
+ * A LangChain chat model bound to ONE named model id on the active provider.
+ *
+ * `getChatModel()` resolves the model from env, which is right for the chat
+ * agent but wrong for the generation pipeline: every role there picks its own
+ * (LECTURE_PLANNER_MODEL, COURSE_EXPAND_MODEL, LECTURE_SVG_MODEL, …), so the
+ * caller has to name it. Returns null for providers with no OpenAI-compatible
+ * endpoint, so the 503 guards in the agents' resolveXDeps read the same way
+ * they always did (see hasOpenAICompatProvider below).
+ *
+ * `maxRetries: 1` is deliberate and must not be raised. LangChain's default is
+ * SIX, and shared/llmGate.ts exists because this project's gateway counts
+ * failed attempts against the quota — six automatic retries behind a 10/min cap
+ * would spend the whole window on one call. Retrying is the gate's job, not the
+ * SDK's.
  */
-export function getOpenAICompatClient(): { client: OpenAI; model: string } | null {
-  const model = getModelName();
+export function getChatModelFor(
+  model: string,
+  maxTokens?: number,
+  extra?: { temperature?: number; modelKwargs?: Record<string, unknown> },
+): ChatOpenAI | null {
+  const { modelKwargs: extraKwargs, ...rest } = extra ?? {};
+  const shared = {
+    model,
+    maxTokens,
+    maxRetries: 1,
+    // Merged, never replaced: reasoningParams is what keeps gpt-5.x accepting
+    // function tools at all, so a caller adding its own kwarg must not drop it.
+    modelKwargs: { ...reasoningParams(model), ...extraKwargs },
+    ...rest,
+  };
   const compat = OPENAI_COMPAT[env.LLM_PROVIDER];
   if (compat) {
-    return { client: new OpenAI({ apiKey: compat.key(), baseURL: compat.baseURL }), model };
+    return new ChatOpenAI({
+      ...shared,
+      apiKey: compat.key(),
+      configuration: { baseURL: compat.baseURL },
+    });
   }
   if (env.LLM_PROVIDER === "openai") {
-    return {
-      client: new OpenAI({ apiKey: requireKey(env.OPENAI_API_KEY, "OPENAI_API_KEY") }),
-      model,
-    };
+    return new ChatOpenAI({ ...shared, apiKey: requireKey(env.OPENAI_API_KEY, "OPENAI_API_KEY") });
   }
   return null;
+}
+
+/**
+ * Whether the active provider speaks the OpenAI chat-completions dialect the
+ * agent layer is built on (forced tool calls, streamed tool-call deltas).
+ *
+ * The generation agents refuse to run without it — anthropic and google reach
+ * the chat agent's LangChain fallback instead, which answers but cannot use
+ * tools. Replaces getOpenAICompatClient(), which the resolvers had been calling
+ * purely for this yes/no and then throwing the client away.
+ */
+export function hasOpenAICompatProvider(): boolean {
+  return Boolean(OPENAI_COMPAT[env.LLM_PROVIDER]) || env.LLM_PROVIDER === "openai";
 }

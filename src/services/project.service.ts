@@ -15,6 +15,10 @@ export interface ProjectInput {
   featured?: boolean;
   courseId?: string;
   chapterIndex?: number;
+  /** The one lesson that opens it. Empty falls back to the chapter rule — see projectGate. */
+  unlockLessonId?: string;
+  /** Days from unlock to submission. 0 = no deadline. */
+  submitWithinDays?: number;
   order?: number;
   difficulty?: "starter" | "practice" | "capstone";
   estimatedHours?: number;

@@ -1,3 +1,4 @@
+import type { CurriculumRef } from "../rag/curriculum.js";
 import { Types } from "mongoose";
 import { LearningPathModel } from "../database/models/learningPath.model.js";
 import { buildPathSteps, getActiveState, type PathStep } from "./activeSelection.service.js";
@@ -9,6 +10,8 @@ export interface PathCourse {
   covers?: string;
   /** 1-3 words naming the step, listed down the side of the path. */
   theme?: string;
+  /** The curriculum template course this step comes from, if any. */
+  template?: CurriculumRef | null;
 }
 
 /** Persists a proposed multi-course path; returns the saved doc (with its _id). */
@@ -27,6 +30,49 @@ export async function createLearningPath(
   return path.toObject();
 }
 
+/** A step as the Courses page lists it — a generated course, or one still only proposed. */
+export type PathListStep =
+  | PathStep
+  | (Omit<PathStep, "status"> & {
+      status: "planned";
+      /** What the course will teach — shown on the card before it exists. */
+      objective: string;
+    });
+
+/**
+ * The proposed-but-not-generated steps of a path, merged in order with the
+ * generated ones. Generated steps keep the state buildPathSteps gave them; a
+ * planned step has no course yet, so it has no progress and no gate — only a
+ * "Create course" button.
+ */
+function mergePlanned(
+  generated: PathStep[],
+  proposed: { title: string; objective: string; level?: string | null }[],
+): PathListStep[] {
+  const taken = new Set(generated.map((s) => s.order));
+  const planned: PathListStep[] = proposed.flatMap((c, i) =>
+    taken.has(i + 1)
+      ? []
+      : [
+          {
+            courseId: "",
+            title: c.title,
+            order: i + 1,
+            progress: 0,
+            lessons: 0,
+            completedLessons: 0,
+            desc: "",
+            level: c.level ?? "Beginner",
+            icon: "book",
+            status: "planned" as const,
+            lockReason: "",
+            objective: c.objective,
+          },
+        ],
+  );
+  return [...generated, ...planned].sort((a, b) => a.order - b.order);
+}
+
 export interface PathSummary {
   pathId: string;
   goal: string;
@@ -40,7 +86,10 @@ export interface PathSummary {
   completed: number;
   /** Percent of the path's courses finished — the headline number on the panel. */
   progress: number;
-  steps: PathStep[];
+  /** Every step of the path in order: the generated courses (with their gate
+   *  state) and, between and after them, the proposed ones not created yet
+   *  (`status: "planned"`, empty `courseId`). */
+  steps: PathListStep[];
   /** This path's own cooldown. While active it blocks switching OFF; while
    *  inactive it blocks switching back ON. */
   lockedUntil: Date | null;
@@ -76,8 +125,11 @@ export async function listPathsWithCourses(userId: string): Promise<PathSummary[
 
   const out: PathSummary[] = [];
   for (const path of paths) {
-    const steps = await buildPathSteps(userId, String(path._id));
-    if (steps.length === 0) continue;
+    const generated = await buildPathSteps(userId, String(path._id));
+    // Still only shown once the student has built something from it: every
+    // proposal writes a path, and the ones never acted on are not a plan.
+    if (generated.length === 0) continue;
+    const steps = mergePlanned(generated, path.courses ?? []);
     const completed = steps.filter((s) => s.status === "done").length;
     const isActive = activePathIds.has(String(path._id));
     const lockedUntil = path.lockedUntil ?? null;
@@ -131,6 +183,11 @@ export async function getLearningPath(userId: string, pathId: string) {
 }
 
 export type LearningPathDoc = Awaited<ReturnType<typeof getLearningPath>>;
+
+/** The student's most recently proposed path — what a "Create these courses" reply refers to. */
+export async function latestLearningPath(userId: string) {
+  return LearningPathModel.findOne({ userId: new Types.ObjectId(userId) }).sort({ createdAt: -1 }).lean();
+}
 
 /**
  * Finds the path + 1-based order of the entry matching this course, by objective

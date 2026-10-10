@@ -45,6 +45,8 @@ export function toCourseInput(
   return {
     title: gen.title,
     desc: gen.desc,
+    whyTake: gen.whyTake,
+    outcomes: gen.outcomes,
     level: gen.level,
     estimatedHours: gen.estimatedHours,
     // Safety net: the model reaches for a vague generic ("book" on a course

@@ -55,14 +55,23 @@ async function startIntakeViaTool(scope: "single" | "multi" = "single", topic = 
   );
 }
 
-/** Answers whatever stage the intake is on, until it reports done. */
+/**
+ * Answers whatever stage the intake is on, until it reports done.
+ *
+ * `language` gets a real default rather than the generic "ok": every other slot
+ * accepts anything, but that one VALIDATES, and "Ok" is a plausible-looking
+ * language name that the tutor cannot speak — so the generic answer would put
+ * the walk in a re-ask loop. (Before the check existed it quietly produced a
+ * course in a language called "Ok".)
+ */
 async function walk(id: string, replies: Partial<Record<string, string[]>>) {
   let payload = (await request(app).get(`/api/intake/${id}`).set(auth())).body.data;
   const seen: string[] = [];
   for (let step = 0; step < 20 && !payload.done; step++) {
     const stage = payload.stage as string;
     seen.push(stage);
-    const given = replies[stage] ?? payload.questions.map(() => "ok");
+    const fallback = stage === "language" ? ["English"] : payload.questions.map(() => "ok");
+    const given = replies[stage] ?? fallback;
     const res = await post(id, {
       stage,
       ...(payload.round ? { round: payload.round } : {}),
@@ -145,6 +154,75 @@ describe("start_learning_intake tool", () => {
     expect(options).toHaveLength(4);
     expect(options.join(" ")).not.toMatch(/banglish/i);
     expect(options.filter((o) => /bangla|বাংলা/i.test(o))).toHaveLength(1);
+  });
+});
+
+/**
+ * A language we can WRITE but cannot SPEAK.
+ *
+ * The lessons are taught out loud, so a course in a language the tutor has no
+ * voice for is a document the student meets in silence. The honest moment to
+ * say so is at the card, not when they open a classroom ten minutes later.
+ */
+describe("a language the tutor cannot speak", () => {
+  it("asks again instead of accepting it", async () => {
+    const started = await startIntakeViaTool();
+    const id = started.intake!.intakeId;
+
+    const res = await post(id, { stage: "language", answers: answer("Nepali") });
+    expect(res.status).toBe(200);
+    // Same stage, new question — the intake has not moved on.
+    expect(res.body.data.stage).toBe("language");
+    expect(res.body.data.done).toBeFalsy();
+
+    const asked = res.body.data.questions[0];
+    // Names their language back rather than calling it unsupported.
+    expect(asked.question).toContain("नेपाली");
+    expect(asked.question).toMatch(/can't yet SPEAK it/i);
+    // Neighbours, not the generic four: Nepali's are Hindi and Bangla.
+    expect(asked.options[0]).toContain("Hindi");
+    expect(asked.options.join(" ")).toMatch(/বাংলা/);
+  });
+
+  it("does not spend the plan call on a language it is about to refuse", async () => {
+    const started = await startIntakeViaTool();
+    const id = started.intake!.intakeId;
+
+    await post(id, { stage: "language", answers: answer("Nepali") });
+    // The plan is a model round-trip written IN the chosen language. Paying for
+    // one in a language we are rejecting is paying for an answer we discard.
+    expect(mockPlan).not.toHaveBeenCalled();
+
+    await post(id, { stage: "language", answers: answer("हिन्दी (Hindi)") });
+    expect(mockPlan).toHaveBeenCalledTimes(1);
+    expect(mockPlan.mock.calls[0]![0]).toMatchObject({ language: "hi" });
+  });
+
+  it("carries on normally once they pick one we can speak", async () => {
+    const started = await startIntakeViaTool();
+    const id = started.intake!.intakeId;
+
+    await post(id, { stage: "language", answers: answer("Swahili") });
+    const res = await post(id, { stage: "language", answers: answer("বাংলা (Bangla)") });
+    expect(res.body.data.stage).toBe("goal");
+
+    const doc = await LearningIntakeModel.findById(id).lean();
+    expect(doc!.language).toBe("bn");
+    // Both attempts are in the transcript: what they asked for first is part of
+    // the conversation, and the report reads better for having it.
+    const asked = doc!.answers.filter((a) => a.stage === "language").map((a) => a.answer);
+    expect(asked).toEqual(["Swahili", "বাংলা (Bangla)"]);
+  });
+
+  it("offers the generic four when it cannot even name the language", async () => {
+    const started = await startIntakeViaTool();
+    const id = started.intake!.intakeId;
+
+    const res = await post(id, { stage: "language", answers: answer("Swahili") });
+    expect(res.body.data.questions[0].question).toContain("Swahili");
+    // A slug carries no family information, so suggesting neighbours would be
+    // invention. The card's own four is the honest fallback.
+    expect(res.body.data.questions[0].options).toHaveLength(4);
   });
 });
 

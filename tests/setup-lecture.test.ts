@@ -1,14 +1,12 @@
-import type OpenAI from "openai";
+import type { ChatOpenAI } from "@langchain/openai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fakeDeps, fakeRoutingDeps, textResponse, toolCallResponse } from "./helpers/fakeLlm.js";
 import { classifyLesson } from "../src/agents/lecture-maker/classify.js";
 import { makeLecture, type LectureProgressEvent } from "../src/agents/lecture-maker/index.js";
 import { rankByVendor } from "../src/agents/lecture-maker/downloads.js";
 import { parseOperatingSystem } from "../src/agents/tools/prompts/intake.js";
 import type { LessonContext } from "../src/agents/lecture-maker/prompt.js";
-import {
-  setupBlueprintSchema,
-  setupLecturePlanSchema,
-} from "../src/agents/lecture-maker/schema.js";
+import { setupBlueprintSchema } from "../src/agents/lecture-maker/schema.js";
 import type { WebSearchOptions, WebSearchResult } from "../src/agents/tools/web-search.js";
 import type { LinkCandidate } from "../src/agents/lecture-maker/linkPicking.js";
 
@@ -29,30 +27,7 @@ import type { LinkCandidate } from "../src/agents/lecture-maker/linkPicking.js";
  *      ignored.
  */
 
-// --- shared fakes ---
-
-function fakeDeps(...responses: unknown[]) {
-  const create = vi.fn();
-  for (const r of responses) create.mockResolvedValueOnce(r);
-  const client = { chat: { completions: { create } } } as unknown as OpenAI;
-  return { deps: { client, model: "fake/model" }, create };
-}
-
-function toolCallResponse(name: string, args: unknown) {
-  return {
-    choices: [
-      {
-        finish_reason: "tool_calls",
-        message: {
-          content: null,
-          tool_calls: [
-            { id: "call_1", type: "function", function: { name, arguments: JSON.stringify(args) } },
-          ],
-        },
-      },
-    ],
-  };
-}
+// --- shared fakes: helpers/fakeLlm.ts, which this file used to copy ---
 
 const SETUP_CTX: LessonContext = {
   lessonId: "l-setup",
@@ -172,7 +147,7 @@ describe("classifyLesson", () => {
   // the setup formatting, never the lesson.
   it("falls back to concept when the model call throws", async () => {
     const create = vi.fn().mockRejectedValue(new Error("provider down"));
-    const deps = { client: { chat: { completions: { create } } } as unknown as OpenAI, model: "m" };
+    const deps = { chat: { bindTools: () => ({ invoke: create }) } as unknown as ChatOpenAI, model: "m" };
     await expect(classifyLesson(SETUP_CTX, deps)).resolves.toBe("concept");
   });
 
@@ -186,229 +161,6 @@ describe("classifyLesson", () => {
 });
 
 // --- 2. Plan shape ---
-
-describe("setupLecturePlanSchema", () => {
-  const parse = (mutate: (p: ReturnType<typeof validSetupPlan>) => void) => {
-    const plan = validSetupPlan();
-    mutate(plan);
-    return setupLecturePlanSchema.safeParse(plan);
-  };
-  const issuesOf = (r: ReturnType<typeof setupLecturePlanSchema.safeParse>) =>
-    r.success ? "" : r.error.issues.map((i) => i.message).join(" | ");
-
-  it("accepts a well-formed guide", () => {
-    expect(setupLecturePlanSchema.safeParse(validSetupPlan()).success).toBe(true);
-  });
-
-  it("has no quiz type at all", () => {
-    const r = parse((p) => {
-      p.blocks.splice(8, 0, { type: "quiz", topicId: 3, brief: "test them" });
-    });
-    expect(r.success).toBe(false);
-  });
-
-  it("rejects an svg", () => {
-    const r = parse((p) => {
-      p.blocks.splice(1, 0, { type: "svg", topicId: 1, brief: "draw the flow" });
-    });
-    expect(r.success).toBe(false);
-  });
-
-  it("requires exactly one downloads block", () => {
-    expect(issuesOf(parse((p) => p.blocks.splice(3, 1)))).toContain("exactly one downloads block");
-    expect(
-      issuesOf(parse((p) => p.blocks.splice(4, 0, { type: "downloads", topicId: 2, brief: "again" }))),
-    ).toContain("exactly one downloads block");
-  });
-
-  it("rejects a downloads block placed after the install steps", () => {
-    const r = parse((p) => {
-      const [downloads] = p.blocks.splice(3, 1);
-      p.blocks.splice(7, 0, downloads!);
-    });
-    expect(issuesOf(r)).toContain("FIRST HALF");
-  });
-
-  it("requires the guide to end on the checklist", () => {
-    const r = parse((p) => {
-      const [checklist] = p.blocks.splice(8, 1);
-      p.blocks.splice(5, 0, checklist!);
-    });
-    expect(issuesOf(r)).toContain("must be a checklist");
-  });
-
-  it("requires a troubleshooting table", () => {
-    expect(issuesOf(parse((p) => p.blocks.splice(7, 1)))).toContain("troubleshooting");
-  });
-});
-
-// --- 3. The pipeline end to end, with fakes ---
-
-/**
- * The real downloads module reaches the network twice (a search and a HEAD
- * check), so the pipeline tests mock the search boundary and let everything
- * else — ranking, filtering, the picker's number-only parse — run for real.
- */
-const DOWNLOAD_RESULTS: WebSearchResult = {
-  query: "d",
-  sources: [
-    { title: "Download Python", url: "https://www.python.org/downloads/", content: "Official downloads." },
-    { title: "Python on Softonic", url: "https://en.softonic.com/python", content: "Free download!" },
-    { title: "Visual Studio Code", url: "https://code.visualstudio.com/Download", content: "Get VS Code." },
-  ],
-};
-
-interface PipelineOptions {
-  emission?: Record<string, unknown>;
-  search?: WebSearchResult | Error;
-}
-
-async function loadPipeline(opts: PipelineOptions = {}) {
-  vi.resetModules();
-  const runWebSearch = vi.fn(async (_q: string, _o: WebSearchOptions = {}) => {
-    const result = opts.search ?? DOWNLOAD_RESULTS;
-    if (result instanceof Error) throw result;
-    return result;
-  });
-
-  vi.doMock("../src/config/env.js", async () => {
-    const actual = await vi.importActual<typeof import("../src/config/env.js")>("../src/config/env.js");
-    // Downloads on, resources off — this keeps the assembled guide to exactly
-    // the blocks the plan asked for, so block indexes mean what they say.
-    return { ...actual, isResourcesEnabled: () => true };
-  });
-  vi.doMock("../src/agents/tools/web-search.js", async () => {
-    const actual = await vi.importActual<typeof import("../src/agents/tools/web-search.js")>(
-      "../src/agents/tools/web-search.js",
-    );
-    return { ...actual, runWebSearch };
-  });
-  // The RAG and freshness retrievals are not what these tests are about, and
-  // both would otherwise try to reach a real service.
-  vi.doMock("../src/rag/retriever.js", () => ({ retrieveGrounding: async () => "" }));
-  vi.doMock("../src/agents/shared/freshness.js", () => ({ retrieveFreshness: async () => "" }));
-  // The closing further-reading section has its own suite; here it would only
-  // add a block the assembly assertions would have to skip over.
-  vi.doMock("../src/agents/lecture-maker/resources.js", () => ({
-    buildResourcesBlock: async () => null,
-  }));
-
-  const { makeLecture: make } = await import("../src/agents/lecture-maker/index.js");
-
-  const emission = opts.emission ?? {
-    intro: "Grab both installers.",
-    picks: [{ number: 1, label: "Python for Windows", note: "Pick the 64-bit installer.", kind: "installer" }],
-  };
-
-  const deps = {
-    classifier: fakeDeps(toolCallResponse("emit_lesson_kind", { kind: "setup", reason: "installs" })).deps,
-    analyst: fakeDeps(toolCallResponse("emit_setup_blueprint", validSetupBlueprint())).deps,
-    planner: fakeDeps(toolCallResponse("emit_setup_plan", validSetupPlan())).deps,
-    worker: fakeDeps(
-      toolCallResponse("emit_setup_blocks", { blocks: TOPIC_1 }),
-      toolCallResponse("emit_setup_blocks", { blocks: TOPIC_2 }),
-      toolCallResponse("emit_setup_blocks", { blocks: TOPIC_3 }),
-    ).deps,
-    downloads: fakeDeps(toolCallResponse("emit_download_picks", emission)).deps,
-  };
-
-  return { make, deps, runWebSearch };
-}
-
-describe("makeSetupLecture", () => {
-  beforeEach(() => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(globalThis, "fetch").mockResolvedValue({ status: 200 } as Response);
-  });
-  afterEach(() => {
-    vi.doUnmock("../src/config/env.js");
-    vi.doUnmock("../src/agents/tools/web-search.js");
-    vi.doUnmock("../src/rag/retriever.js");
-    vi.doUnmock("../src/agents/shared/freshness.js");
-    vi.doUnmock("../src/agents/lecture-maker/resources.js");
-    vi.restoreAllMocks();
-  });
-
-  it("assembles the guide in plan order, with the downloads block where the planner put it", async () => {
-    const { make, deps } = await loadPipeline();
-    const made = await make(SETUP_CTX, deps);
-
-    expect(made.kind).toBe("setup");
-    expect(made.blocks.map((b) => b.type)).toEqual([
-      "heading", "paragraph", "heading", "downloads", "heading", "list", "code", "table", "checklist",
-    ]);
-    expect(made.blocks.map((b) => b.id)).toEqual(
-      ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9"],
-    );
-    // The two rules the whole lane exists for.
-    expect(made.blocks.some((b) => b.type === "quiz")).toBe(false);
-    expect(made.blocks.at(-1)!.type).toBe("checklist");
-  });
-
-  it("puts only real, non-aggregator search results in front of the student", async () => {
-    const { make, deps } = await loadPipeline();
-    const made = await make(SETUP_CTX, deps);
-
-    const downloads = made.blocks.find((b) => b.type === "downloads") as {
-      os: string;
-      links: { url: string; label: string }[];
-    };
-    expect(downloads.os).toBe("windows");
-    expect(downloads.links.map((l) => l.url)).toEqual(["https://www.python.org/downloads/"]);
-    // Softonic is in the download blocklist — an aggregator's wrapped installer
-    // is the one link here that could actively harm the student.
-    expect(JSON.stringify(downloads.links)).not.toContain("softonic");
-  });
-
-  it("ignores a url the picker invented and ships the candidate's own address", async () => {
-    const { make, deps } = await loadPipeline({
-      emission: {
-        intro: "Grab both installers.",
-        picks: [
-          {
-            number: 1,
-            label: "Python",
-            note: "The official installer.",
-            kind: "installer",
-            // Not in the tool schema at all. If this ever reached a student they
-            // would run whatever is at it.
-            url: "https://python-downloads.example.com/setup.exe",
-          },
-        ],
-      },
-    });
-    const made = await make(SETUP_CTX, deps);
-    const downloads = made.blocks.find((b) => b.type === "downloads") as { links: { url: string }[] };
-    expect(downloads.links[0]!.url).toBe("https://www.python.org/downloads/");
-    expect(JSON.stringify(made.blocks)).not.toContain("python-downloads.example.com");
-  });
-
-  it("ships the guide without the section when every search fails", async () => {
-    const { make, deps } = await loadPipeline({ search: new Error("tavily down") });
-    const made = await make(SETUP_CTX, deps);
-    expect(made.blocks.some((b) => b.type === "downloads")).toBe(false);
-    // No id gap where the dropped block was, and the guide still ends properly.
-    expect(made.blocks.map((b) => b.id)).toEqual(["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8"]);
-    expect(made.blocks.at(-1)!.type).toBe("checklist");
-  });
-
-  it("reports the lane it chose through onProgress", async () => {
-    const { make, deps } = await loadPipeline();
-    const events: LectureProgressEvent[] = [];
-    await make(SETUP_CTX, deps, (ev) => events.push(ev));
-
-    expect(events[0]).toEqual({ stage: "analyzing" });
-    expect(events[1]).toEqual({ stage: "classified", kind: "setup" });
-    expect(events.filter((e) => e.stage === "downloads")).toEqual([
-      { stage: "downloads", status: "start" },
-      { stage: "downloads", status: "done", links: 1 },
-    ]);
-    expect(events.at(-1)).toEqual({ stage: "assembling" });
-  });
-});
-
-// --- 4. Supporting units ---
 
 describe("rankByVendor", () => {
   const c = (domain: string): LinkCandidate => ({

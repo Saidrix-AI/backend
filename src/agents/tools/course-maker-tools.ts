@@ -1,18 +1,17 @@
 import { z } from "zod";
 import { LEVELS } from "../../validation/course.schema.js";
-import { latestProfile } from "../../services/assessment.service.js";
 import { latestIntake } from "../../services/intake.service.js";
-import { buildStudentContext } from "../../services/studentMemory.service.js";
 import {
   createLearningPath,
   getLearningPath,
-  findPathEntryByObjective,
+  latestLearningPath,
 } from "../../services/learningPath.service.js";
-import type { CoursePathMeta } from "../../services/course.service.js";
+import { coursesOf, resolveRef, type CurriculumMatch } from "../../rag/curriculum.js";
+import type { PathCourse } from "../../services/learningPath.service.js";
 import { makeCourse } from "../course-maker/index.js";
-import { buildPathBoundary } from "../course-maker/prompt.js";
-import { generateCourseTool, proposeCoursesTool } from "./prompts/course-maker.js";
-import { failure, invalidArgs, type RegisteredTool } from "./types.js";
+import { buildCourseRequest, makePathCourse } from "../course-maker/request.js";
+import { createPathCoursesTool, generateCourseTool, proposeCoursesTool } from "./prompts/course-maker.js";
+import { failure, invalidArgs, type RegisteredTool, type ToolOutcome } from "./types.js";
 
 const generateArgs = z.object({
   objective: z.string().min(1).max(500),
@@ -27,6 +26,24 @@ const generateArgs = z.object({
   withProjects: z.boolean().default(true),
 });
 
+/** The model-facing summary of a freshly generated course. */
+function createdText(made: Awaited<ReturnType<typeof makeCourse>>): string {
+  const { course, projects, projectErrors } = made;
+  let text =
+    `Created full course "${course.title}" (id: ${String(course._id)}, level: ${course.level}, ` +
+    `~${course.estimatedHours} hours): ${course.chapters.length} chapters, ${course.lessons} lessons, ` +
+    `${course.quizzes.length} quizzes.` +
+    (projects.length ? ` Linked projects: ${projects.map((p) => `"${p.title}"`).join(", ")}.` : "") +
+    " Note: this is the curriculum roadmap only — lecture pages for the lessons are generated later.";
+  if (projectErrors.length) text += ` Some projects could not be created: ${projectErrors.join(", ")}.`;
+  return text;
+}
+
+function projectPart(made: Awaited<ReturnType<typeof makeCourse>>): string {
+  const n = made.projects.length;
+  return n ? `, ${n} project${n > 1 ? "s" : ""}` : "";
+}
+
 const generateCourse: RegisteredTool = {
   schema: generateCourseTool,
   runningLabel: (a) =>
@@ -37,113 +54,13 @@ const generateCourse: RegisteredTool = {
     const parsed = generateArgs.safeParse(args);
     if (!parsed.success) return invalidArgs("Couldn't generate course", parsed.error);
     try {
-      // A completed knowledge check outranks whatever the model typed into
-      // priorKnowledge — it is measured rather than self-reported, and it means
-      // the model never has to carry an assessment id around. The intake
-      // supplies the content language the same way.
-      //
-      // 30 days, not the 120-minute default: that default exists for "the
-      // intake just finished, generate the course now". Lecture exams keep
-      // folding results into this profile (assessment.recordQuizOutcome), so
-      // here it is accumulated evidence about the student rather than a stale
-      // guess, and expiring it after two hours would throw that away.
-      const [assessed, intake] = await Promise.all([
-        latestProfile(ctx.userId, 30 * 24 * 60).catch(() => null),
-        latestIntake(ctx.userId).catch(() => null),
-      ]);
-
-      // Who the student is, on top of what they know, plus what earlier sessions
-      // were about — "they keep coming back to job interviews" changes which
-      // examples a curriculum should be built around. The three overlapping keys
-      // are dropped when a measured profile exists — profileLines is about to
-      // state the assessed versions, and saying both invites the model to
-      // average two different numbers of study hours.
-      //
-      // No `state` slice for the same reason: it would put logged study hours
-      // beside the assessed weeklyHours. No `mastery` slice either — `assessed`
-      // above already carries it into the prompt through profileLines.
-      const learner = await buildStudentContext(ctx.userId, {
-        include: ["identity", "narrative"],
-        ...(assessed ? { omit: ["weeklyHours", "careerGoal", "preferredStyle"] } : {}),
-      });
-
-      // Multi-course path linkage. Resolve the plan either from the model-passed
-      // pathId+order OR — so group creation "just works" without the model having
-      // to carry pathId/order across turns — by matching this course's objective
-      // to a previously proposed path. Then use this step's authoritative
-      // objective/level and turn its siblings into prerequisite/deferral
-      // boundaries so path courses never repeat each other's ground.
-      let pathBrief: { objective?: string; level?: (typeof LEVELS)[number]; pathBoundary?: string } = {};
-      let pathMeta: CoursePathMeta | undefined;
-
-      let resolved: { path: NonNullable<Awaited<ReturnType<typeof getLearningPath>>>; order: number } | null = null;
-      if (parsed.data.pathId && parsed.data.order) {
-        const path = await getLearningPath(ctx.userId, parsed.data.pathId);
-        if (path && path.courses[parsed.data.order - 1]) resolved = { path, order: parsed.data.order };
-      }
-      if (!resolved) {
-        resolved = await findPathEntryByObjective(ctx.userId, parsed.data.objective, parsed.data.titleHint);
-      }
-      if (resolved) {
-        const entry = resolved.path.courses[resolved.order - 1]!;
-        pathBrief = {
-          objective: entry.objective,
-          ...(entry.level ? { level: entry.level } : {}),
-          pathBoundary: buildPathBoundary(resolved.path.goal, resolved.path.courses, resolved.order),
-        };
-        pathMeta = {
-          pathId: String(resolved.path._id),
-          pathTitle: resolved.path.goal,
-          order: resolved.order,
-          pathTotal: resolved.path.courses.length,
-        };
-      }
-
-      const { course, projects, projectErrors } = await makeCourse(
-        ctx.userId,
-        {
-          ...parsed.data,
-          ...pathBrief,
-          ...(assessed ? { profile: assessed.profile } : {}),
-          ...(intake ? { language: intake.language } : {}),
-          // The intake's brief: where to start, what not to re-teach, whether
-          // the student owes a setup lesson, and how long they can sit down
-          // for. `profile` says what they know; this says what to do about it.
-          ...(intake?.report
-            ? {
-                ...(intake.report.startFrom ? { startFrom: intake.report.startFrom } : {}),
-                ...(intake.report.skip?.length ? { skip: intake.report.skip } : {}),
-                needsSetupLesson: Boolean(intake.report.needsSetupLesson),
-              }
-            : {}),
-          ...(intake?.dailyMinutes ? { dailyMinutes: intake.dailyMinutes } : {}),
-          ...(learner ? { learner } : {}),
-        },
-        pathMeta,
-      );
-      const projPart = projects.length
-        ? `, ${projects.length} project${projects.length > 1 ? "s" : ""}`
-        : "";
-      let modelText =
-        `Created full course "${course.title}" (id: ${String(course._id)}, level: ${course.level}, ` +
-        `~${course.estimatedHours} hours): ${course.chapters.length} chapters, ${course.lessons} lessons, ` +
-        `${course.quizzes.length} quizzes.` +
-        (projects.length ? ` Linked projects: ${projects.map((p) => `"${p.title}"`).join(", ")}.` : "") +
-        " Note: this is the curriculum roadmap only — lecture pages for the lessons are generated later.";
-      if (projectErrors.length) {
-        modelText += ` Some projects could not be created: ${projectErrors.join(", ")}.`;
-      }
-
-      // No knowledge-base sources here. This used to run a SECOND retrieval —
-      // on top of the one that actually grounds the writing (course-maker/
-      // generator.ts and expand.ts) — purely so the chat could list the guides
-      // it drew on. Now that the curriculum citation strip is gone, that was an
-      // extra embed + Pinecone round-trip per course for nothing.
+      const { brief, pathMeta } = await buildCourseRequest(ctx.userId, parsed.data);
+      const made = await makeCourse(ctx.userId, brief, pathMeta);
       return {
         ok: true,
         changed: "course",
-        label: `Course "${course.title}" created (${course.lessons} lessons${projPart})`,
-        modelText,
+        label: `Course "${made.course.title}" created (${made.course.lessons} lessons${projectPart(made)})`,
+        modelText: createdText(made),
       };
     } catch (err) {
       return failure("Couldn't generate course", err);
@@ -151,9 +68,32 @@ const generateCourse: RegisteredTool = {
   },
 };
 
+// ---------------------------------------------------------------- the path
+
+/**
+ * How many courses a path has is decided by the SERVER, not the chat model.
+ *
+ * When the intake matched one of Saidrix's curriculum templates, the courses
+ * are that template's: a language's foundation is one course, a career
+ * roadmap is exactly its steps, in its order, with its titles. The model's own
+ * list is ignored; it only supplies the goal line and the step labels.
+ *
+ * With no template, a request is one course unless it is a career goal
+ * ("career" breadth), which must cover the whole syllabus. The old middle
+ * size ("subject", 2-3 courses) produced the filler courses students saw, so
+ * it now means one course too.
+ */
+export const BREADTHS = ["topic", "subject", "career"] as const;
+export type Breadth = (typeof BREADTHS)[number];
+
+export const CAREER_RANGE: [number, number] = [4, 10];
+
+export const MAX_PATH_COURSES = 16;
+
 const proposeArgs = z.object({
   goal: z.string().min(1).max(200),
   summary: z.string().min(1).max(200).optional(),
+  breadth: z.enum(BREADTHS),
   courses: z
     .array(
       z.object({
@@ -165,11 +105,50 @@ const proposeArgs = z.object({
         note: z.string().min(1).max(200).optional(),
       }),
     )
-    // A single narrow topic is a one-step path — the roadmap UI and the path
-    // linkage work the same either way, so one course is valid.
     .min(1)
-    .max(5),
+    .max(MAX_PATH_COURSES),
 });
+type ProposedCourse = z.infer<typeof proposeArgs>["courses"][number];
+
+/** A path whose size does not fit its breadth — the model fixes it and retries. */
+function breadthMismatch(breadth: Breadth, count: number, scope: "single" | "multi" | null): ToolOutcome | null {
+  const retry = (why: string): ToolOutcome => ({
+    ok: false,
+    label: "Couldn't propose courses",
+    modelText: `Invalid path: ${why} Fix the courses list and call propose_courses again.`,
+  });
+  if (scope === "single" && breadth === "career") {
+    return retry('the student asked about ONE topic, so breadth cannot be "career". Use "topic" with exactly ONE course.');
+  }
+  if (breadth !== "career") {
+    return count === 1
+      ? null
+      : retry(`${count} course(s) given, but anything short of a career goal is exactly ONE course — merge them into one course that covers the topic.`);
+  }
+  const [min, max] = CAREER_RANGE;
+  if (count < min || count > max) {
+    return retry(
+      `${count} course(s) given, but breadth "career" is 4-10 courses covering the whole syllabus for that role — add the missing subjects, or if it is one topic use "topic" with one course.`,
+    );
+  }
+  return null;
+}
+
+/** The template's courses as path steps; the model's step labels are kept by position. */
+function templateCourses(match: CurriculumMatch, modelCourses: ProposedCourse[]) {
+  const steps = coursesOf(match);
+  return steps.map(({ course, index }, i) => {
+    const modules = course.modules.map((m) => m.title).join(", ");
+    const theme = steps.length === modelCourses.length ? modelCourses[i]?.theme : undefined;
+    return {
+      title: course.title,
+      objective: [course.summary || course.title, course.status ? `(${course.status})` : ""].filter(Boolean).join(" "),
+      covers: modules.slice(0, 400),
+      theme: theme ?? "",
+      template: { sourcePath: match.template.sourcePath, courseIndex: index },
+    };
+  });
+}
 
 const proposeCourses: RegisteredTool = {
   schema: proposeCoursesTool,
@@ -178,31 +157,48 @@ const proposeCourses: RegisteredTool = {
     const parsed = proposeArgs.safeParse(args);
     if (!parsed.success) return invalidArgs("Couldn't propose courses", parsed.error);
     try {
-      // Persist the ordered plan so each generate_course call can pull this
-      // step's scope and its siblings' boundaries from one authoritative source.
-      const path = await createLearningPath(
-        ctx.userId,
-        parsed.data.goal,
-        parsed.data.courses.map((c) => ({
+      const intake = await latestIntake(ctx.userId).catch(() => null);
+      const match = await resolveRef(intake?.curriculum);
+
+      let courses: (PathCourse & { note?: string })[];
+      if (match) {
+        courses = templateCourses(match, parsed.data.courses);
+        console.info(
+          `[propose_courses] from template ${match.template.sourcePath}: ${courses.length} course(s) (model sent ${parsed.data.courses.length})`,
+        );
+      } else {
+        const mismatch = breadthMismatch(parsed.data.breadth, parsed.data.courses.length, intake?.scope ?? null);
+        if (mismatch) return mismatch;
+        courses = parsed.data.courses.map((c) => ({
           title: c.title,
           objective: c.objective,
           ...(c.level ? { level: c.level } : {}),
           covers: c.covers ?? c.note ?? "",
           theme: c.theme ?? "",
-        })),
+          ...(c.note ? { note: c.note } : {}),
+        }));
+      }
+
+      // Persist the ordered plan so each course generation can pull this step's
+      // scope and its siblings' boundaries from one authoritative source.
+      const path = await createLearningPath(
+        ctx.userId,
+        parsed.data.goal,
+        courses.map(({ note: _note, ...c }) => c),
         parsed.data.summary ?? "",
       );
       const pathId = String(path._id);
-      const titles = parsed.data.courses.map((c) => `"${c.title}"`).join(", ");
+      const titles = courses.map((c, i) => `${i + 1}. "${c.title}"`).join(", ");
       return {
         ok: true,
-        label: `Proposed ${parsed.data.courses.length} courses`,
+        label: `Proposed ${courses.length} course${courses.length === 1 ? "" : "s"}`,
         modelText:
-          `Learning path saved (pathId=${pathId}, ${parsed.data.courses.length} courses in order): ${titles}. ` +
+          `Learning path saved (pathId=${pathId}, ${courses.length} courses in order): ${titles}. ` +
+          (match ? "These courses come from the Saidrix curriculum, not from your list; describe these. " : "") +
           "Nothing was created yet. End your turn with one short line asking them to pick. " +
-          `When they reply with their selection, create each chosen course with generate_course, passing pathId="${pathId}" ` +
-          "and order=<its 1-based position in the list above> — in learning order, at most 3 per turn.",
-        proposal: parsed.data.courses,
+          `When they reply with their selection, call create_path_courses ONCE with pathId="${pathId}" and the ` +
+          "1-based numbers of every course they chose (the numbers in the list above).",
+        proposal: courses.map(({ template: _t, ...c }) => c),
       };
     } catch (err) {
       return failure("Couldn't propose courses", err);
@@ -210,4 +206,87 @@ const proposeCourses: RegisteredTool = {
   },
 };
 
-export const courseMakerTools = [generateCourse, proposeCourses];
+// ------------------------------------------------------ creating the path
+
+const createPathArgs = z.object({
+  // Optional: the pathId lives in a tool message, which is not replayed into
+  // later turns, so by the time the student picks the model may not have it.
+  // Without it, the student's most recent proposal is the one they answered.
+  pathId: z.string().min(1).optional(),
+  orders: z.array(z.coerce.number().int().min(1).max(MAX_PATH_COURSES)).min(1).max(MAX_PATH_COURSES),
+});
+
+/**
+ * Generates every chosen course of a proposed path, in learning order, in one
+ * call. It replaces "generate_course once per course, at most 3 per turn" —
+ * which left a student who picked five courses of an eight-course path having
+ * to come back and ask twice more. Quota and idempotency live in
+ * makePathCourse; a course that fails does not stop the ones after it.
+ */
+const createPathCourses: RegisteredTool = {
+  schema: createPathCoursesTool,
+  runningLabel: (a) => {
+    const n = Array.isArray(a.orders) ? a.orders.length : 0;
+    return n > 1 ? `Building ${n} courses` : "Building your course";
+  },
+  run: async (ctx, args) => {
+    const parsed = createPathArgs.safeParse(args);
+    if (!parsed.success) return invalidArgs("Couldn't create courses", parsed.error);
+    const path = await (parsed.data.pathId
+      ? getLearningPath(ctx.userId, parsed.data.pathId)
+      : latestLearningPath(ctx.userId)
+    ).catch(() => null);
+    if (!path) {
+      return {
+        ok: false,
+        label: "Couldn't create courses",
+        modelText: "No learning path found. Call propose_courses first so the student can pick.",
+      };
+    }
+    const pathId = String(path._id);
+    const orders = [...new Set(parsed.data.orders)]
+      .filter((o) => o <= path.courses.length)
+      .sort((a, b) => a - b);
+
+    const done: string[] = [];
+    const failed: string[] = [];
+    let lessons = 0;
+    for (const order of orders) {
+      const title = path.courses[order - 1]!.title;
+      try {
+        const result = await makePathCourse(ctx.userId, pathId, order);
+        if (result.status === "exists") {
+          done.push(`"${result.title}" (already existed)`);
+        } else {
+          lessons += result.made.course.lessons;
+          done.push(createdText(result.made));
+        }
+      } catch (err) {
+        // Out of quota stops the rest — every later one would fail the same way.
+        const message = err instanceof Error ? err.message : "failed";
+        failed.push(`"${title}": ${message}`);
+        if (/limit|quota|allowance/i.test(message)) break;
+      }
+    }
+
+    const skipped = orders.length - done.length - failed.length;
+    const ok = done.length > 0;
+    return {
+      ok,
+      ...(ok ? { changed: "course" as const } : {}),
+      label: ok
+        ? `${done.length} course${done.length === 1 ? "" : "s"} created${lessons ? ` (${lessons} lessons)` : ""}`
+        : "Couldn't create courses",
+      modelText: [
+        done.length ? `Done: ${done.join(" | ")}` : "",
+        failed.length ? `Failed: ${failed.join(" | ")}` : "",
+        skipped > 0 ? `${skipped} not attempted after the monthly course limit was reached.` : "",
+        "Courses that were not created stay on the student's path on the Courses page, where they can create them later.",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    };
+  },
+};
+
+export const courseMakerTools = [generateCourse, proposeCourses, createPathCourses];

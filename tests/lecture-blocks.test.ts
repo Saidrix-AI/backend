@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  easyBlockSchema,
-  emitTopicBlocksTool,
-  finalBlockSchema,
-  lecturePlanSchema,
-  BLOCK_PLAN_TYPES,
-} from "../src/agents/lecture-maker/schema.js";
+import { easyBlockSchema, finalBlockSchema } from "../src/agents/lecture-maker/schema.js";
+import { WRITER_BLOCK_TYPES } from "../src/agents/lecture-maker/sections.js";
 import { fixMermaidCode } from "../src/agents/lecture-maker/mermaid.js";
 
 /**
@@ -128,6 +123,36 @@ describe("fixMermaidCode", () => {
     const once = fixMermaidCode("flowchart TD\n  A[range(n)]");
     expect(fixMermaidCode(once)).toBe(once);
   });
+
+  // The diagram that broke a live Bangla HTML class (2026-09-29). Measured in
+  // Chromium on Mermaid 11.16: `\"` in a label is a parse error, `#quot;`
+  // renders as the literal "&quot;", raw `<head>` is silently deleted by strict
+  // mode, and `'` / `#lt;` / `#gt;` render as written. The frontend applies the
+  // same rewrite at render time for lectures already stored.
+  it("rewrites escaped quotes and HTML tags inside labels so they render", () => {
+    const fixed = fixMermaidCode(
+      'flowchart TD\n  Doctype["<!DOCTYPE html> declaration"] --> Root["<html lang=\\"bn\\"> root"]',
+    );
+    expect(fixed).toContain(`Root["#lt;html lang='bn'#gt; root"]`);
+    expect(fixed).toContain('Doctype["#lt;!DOCTYPE html#gt; declaration"]');
+    expect(fixed).not.toContain('\\"');
+  });
+
+  it("escapes the tags in a label it had to quote itself", () => {
+    expect(fixMermaidCode("flowchart TD\n  A[<head> info]")).toContain('A["#lt;head#gt; info"]');
+  });
+
+  // The next class of the same course (block b13): a quote inside a bare label.
+  it("quotes a bare label that has a double quote inside it", () => {
+    const fixed = fixMermaidCode('flowchart TD\n  B[HTML bytes] --> C[charset="UTF-8" নির্দেশ]');
+    expect(fixed).toContain(`C["charset='UTF-8' নির্দেশ"]`);
+    expect(fixed).toContain("B[HTML bytes] --> ");
+  });
+
+  it("is idempotent on labels it rewrote", () => {
+    const once = fixMermaidCode('flowchart TD\n  R["<html lang=\\"bn\\">"] --> H[<head>]');
+    expect(fixMermaidCode(once)).toBe(once);
+  });
 });
 
 /**
@@ -152,15 +177,8 @@ describe("resources block", () => {
     expect(easyBlockSchema.safeParse(block).success).toBe(false);
   });
 
-  it("cannot be planned", () => {
-    expect(BLOCK_PLAN_TYPES).not.toContain("resources");
-  });
-
-  it("is not offered to the topic worker's tool", () => {
-    const props = emitTopicBlocksTool.function.parameters as {
-      properties: { blocks: { items: { properties: { type: { enum: string[] } } } } };
-    };
-    expect(props.properties.blocks.items.properties.type.enum).not.toContain("resources");
+  it("is not offered to the section writer", () => {
+    expect(WRITER_BLOCK_TYPES).not.toContain("resources");
   });
 
   it("is accepted in the assembled document, with an id", () => {
@@ -180,78 +198,5 @@ describe("resources block", () => {
   it("rejects a link with no url", () => {
     const noUrl = { ...block, id: "b42", links: [{ ...link, url: "" }] };
     expect(finalBlockSchema.safeParse(noUrl).success).toBe(false);
-  });
-});
-
-describe("planner block types", () => {
-  it("offers mermaid, tree, table and math, and no longer offers diagram", () => {
-    expect(BLOCK_PLAN_TYPES).toContain("mermaid");
-    expect(BLOCK_PLAN_TYPES).toContain("tree");
-    expect(BLOCK_PLAN_TYPES).toContain("table");
-    expect(BLOCK_PLAN_TYPES).toContain("math");
-    expect(BLOCK_PLAN_TYPES).not.toContain("diagram");
-  });
-
-  // Every visual kind is plannable anywhere, including nowhere: the per-topic
-  // quota that forced one into each topic has been removed, and where a picture
-  // earns its place is decided by the lesson analyst instead.
-  it("accepts any block type as a topic's only content, visual or not", () => {
-    const plan = (blockType: string) => ({
-      title: "V",
-      outline: [
-        { id: 1, title: "One", duration: "3:00" },
-        { id: 2, title: "Two", duration: "3:00" },
-      ],
-      blocks: [
-        { type: "heading", topicId: 1, brief: "h" },
-        { type: blockType, topicId: 1, brief: "x" },
-        { type: "paragraph", topicId: 1, brief: "p" },
-        { type: "mermaid", topicId: 2, brief: "v2" },
-        { type: "paragraph", topicId: 2, brief: "p2" },
-        { type: "quiz", topicId: 2, brief: "q" },
-      ],
-    });
-    for (const type of ["table", "math", "paragraph", "mermaid", "tree", "chart", "code"]) {
-      expect(lecturePlanSchema.safeParse(plan(type)).success).toBe(true);
-    }
-  });
-
-  it("rejects a plan that still uses the retired diagram type", () => {
-    const plan = {
-      title: "Legacy",
-      outline: [
-        { id: 1, title: "One", duration: "3:00" },
-        { id: 2, title: "Two", duration: "3:00" },
-      ],
-      blocks: [
-        { type: "heading", topicId: 1, brief: "h" },
-        { type: "mermaid", topicId: 1, brief: "v1" },
-        { type: "paragraph", topicId: 1, brief: "p" },
-        { type: "diagram", topicId: 2, brief: "old" },
-        { type: "paragraph", topicId: 2, brief: "p2" },
-        { type: "quiz", topicId: 2, brief: "q" },
-      ],
-    };
-    // Fails on the type enum: diagram is no longer a plannable block.
-    expect(lecturePlanSchema.safeParse(plan).success).toBe(false);
-  });
-
-  it("accepts an entirely visual-free plan for a genuinely verbal lesson", () => {
-    const plan = {
-      title: "Verbal",
-      outline: [
-        { id: 1, title: "One", duration: "3:00" },
-        { id: 2, title: "Two", duration: "3:00" },
-      ],
-      blocks: [
-        { type: "heading", topicId: 1, brief: "h" },
-        { type: "paragraph", topicId: 1, brief: "p" },
-        { type: "list", topicId: 1, brief: "the rules" },
-        { type: "table", topicId: 2, brief: "comparison" },
-        { type: "paragraph", topicId: 2, brief: "p2" },
-        { type: "quiz", topicId: 2, brief: "q" },
-      ],
-    };
-    expect(lecturePlanSchema.safeParse(plan).success).toBe(true);
   });
 });

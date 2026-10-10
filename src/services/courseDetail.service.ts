@@ -157,6 +157,12 @@ export async function getCourseDetail(userId: string, courseId: string) {
 
   // Projects + user status, in the planner's build order (unplanned last).
   const ppMap = new Map(ppRows.map((p) => [p.projectId, p]));
+  /** No row, or a row that only holds the deadline clock, both mean "not started". */
+  const statusOf = (row?: { status?: string }) =>
+    !row || row.status === "unlocked" ? "not_started" : row.status;
+  /** Past its deadline and not handed in. A finished project is never overdue. */
+  const isOverdue = (row?: { status?: string; dueAt?: Date | null }) =>
+    Boolean(row?.dueAt && row.status !== "completed" && row.dueAt.getTime() < Date.now());
   const projects = courseProjects
     .slice()
     .sort((a, b) => (a.order || Number.MAX_SAFE_INTEGER) - (b.order || Number.MAX_SAFE_INTEGER))
@@ -171,11 +177,25 @@ export async function getCourseDetail(userId: string, courseId: string) {
       order: p.order ?? 0,
       difficulty: p.difficulty ?? "",
       estimatedHours: p.estimatedHours ?? 0,
-      status: ppMap.get(String(p._id))?.status ?? "not_started",
+      // "unlocked" means a row exists for the deadline clock and nothing else —
+      // the project is open and untouched, which is what "not_started" has
+      // always meant. Mapped back so nothing downstream has to learn a fourth
+      // word for the same state.
+      status: statusOf(ppMap.get(String(p._id))),
+      // When the submission is due, and whether it already passed. Null when the
+      // project has no deadline, which is every project planned before
+      // `submitWithinDays` existed.
+      dueAt: ppMap.get(String(p._id))?.dueAt ?? null,
+      overdue: isOverdue(ppMap.get(String(p._id))),
       // The course and its completed lessons are already loaded here, so the
       // gate is the pure rule — no extra round trip per project.
       ...projectLock(
-        { courseId: p.courseId, chapterIndex: p.chapterIndex, difficulty: p.difficulty },
+        {
+          courseId: p.courseId,
+          chapterIndex: p.chapterIndex,
+          difficulty: p.difficulty,
+          unlockLessonId: p.unlockLessonId,
+        },
         course,
         completedLessonIds,
       ),
@@ -225,6 +245,10 @@ export async function getCourseDetail(userId: string, courseId: string) {
       _id: String(course._id),
       title: course.title,
       desc: course.desc,
+      // Why take it, and what they can do at the end. Empty on courses
+      // generated before these existed, so the page falls back to `desc`.
+      whyTake: course.whyTake ?? "",
+      outcomes: course.outcomes ?? [],
       level: course.level,
       icon: course.icon,
       thumb: course.thumb,

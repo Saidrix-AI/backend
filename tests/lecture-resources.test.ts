@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { toolCallResponse } from "./helpers/fakeLlm.js";
 import type { WebSearchOptions, WebSearchResult } from "../src/agents/tools/web-search.js";
 import type { LessonContext } from "../src/agents/lecture-maker/prompt.js";
 import type { LessonBlueprint } from "../src/agents/lecture-maker/schema.js";
@@ -101,28 +102,13 @@ async function load(opts: LoadOptions = {}) {
 
   const mod = await import("../src/agents/lecture-maker/resources.js");
 
-  // A minimal OpenAI-shaped fake, same style as lecture-maker.test.ts's.
+  // A minimal chat-model fake, same style as lecture-maker.test.ts's.
   const emission = opts.emission ?? { intro: "Go further.", reading: [{ number: 1, why: "The reference." }] };
   const create = vi.fn(async () => {
     if (emission instanceof Error) throw emission;
-    return {
-      choices: [
-        {
-          finish_reason: "tool_calls",
-          message: {
-            tool_calls: [
-              {
-                id: "c1",
-                type: "function",
-                function: { name: "emit_resource_picks", arguments: JSON.stringify(emission) },
-              },
-            ],
-          },
-        },
-      ],
-    };
+    return toolCallResponse("emit_resource_picks", emission);
   });
-  const deps = { client: { chat: { completions: { create } } }, model: "m" } as never;
+  const deps = { chat: { bindTools: () => ({ invoke: create }) }, model: "m" } as never;
 
   return { ...mod, runWebSearch, calls, create, deps };
 }

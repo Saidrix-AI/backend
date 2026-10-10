@@ -22,6 +22,12 @@ const pathCourseSchema = new Schema(
      * exactly what makes a stacked list of them unreadable.
      */
     theme: { type: String, trim: true, default: "" },
+    /**
+     * The curriculum template course this step was taken from
+     * ({sourcePath, courseIndex}), or null for a step the model wrote. The
+     * course outline then follows that course's modules.
+     */
+    template: { type: Schema.Types.Mixed, default: null },
   },
   { _id: false },
 );

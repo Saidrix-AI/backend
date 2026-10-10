@@ -75,6 +75,10 @@ export const quizSchema = z.object({
 export const createCourseSchema = z.object({
   title: z.string().min(1).max(120),
   desc: z.string().max(500).optional(),
+  // Why take it, and what you can do afterwards — see course.model.ts for why
+  // these are not folded into `desc`. Optional like every other detail field.
+  whyTake: z.string().max(1200).optional(),
+  outcomes: z.array(z.string().min(1).max(200)).max(10).optional(),
   level: z.enum(LEVELS).optional(),
   // Explicit lesson count — honored only when no `chapters` are provided.
   lessons: z.number().int().min(0).max(5000).optional(),

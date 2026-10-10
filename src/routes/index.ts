@@ -12,6 +12,8 @@ import { progressRouter, voiceAgentProgressRouter } from "./progress.routes.js";
 import { courseRouter } from "./course.routes.js";
 import { projectRouter } from "./project.routes.js";
 import { lectureRouter, voiceAgentLectureRouter } from "./lecture.routes.js";
+import { boardRouter } from "./board.routes.js";
+import { runnerRouter } from "./runner.routes.js";
 import { voiceRouter } from "./voice.routes.js";
 import { requireAuth, requireAuthOrVoiceAgent } from "../middleware/auth.middleware.js";
 import { requireActivePlan } from "../middleware/subscription.middleware.js";
@@ -54,6 +56,8 @@ const paid = [requireAuth, requireActivePlan];
 // router for the same prefix — so forgetting to think about the agent leaves a
 // new route closed to it, rather than open.
 apiRouter.use("/lectures", requireAuthOrVoiceAgent, requireActivePlan, voiceAgentLectureRouter);
+// The classroom whiteboard snapshot: the agent writes it, the browser reads it.
+apiRouter.use("/lectures", requireAuthOrVoiceAgent, requireActivePlan, boardRouter);
 apiRouter.use("/progress", requireAuthOrVoiceAgent, requireActivePlan, voiceAgentProgressRouter);
 
 apiRouter.use("/chat", paid, chatRouter);
@@ -63,5 +67,8 @@ apiRouter.use("/courses", paid, courseRouter);
 apiRouter.use("/projects", paid, projectRouter);
 apiRouter.use("/lectures", paid, lectureRouter);
 apiRouter.use("/voice", paid, voiceRouter);
+// Compiles and runs the classroom's non-browser languages. Behind the paywall
+// like everything else it serves, and rate-limited per user inside the router.
+apiRouter.use("/run", paid, runnerRouter);
 apiRouter.use("/assessments", paid, assessmentRouter);
 apiRouter.use("/intake", paid, intakeRouter);

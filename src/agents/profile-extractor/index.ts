@@ -5,7 +5,7 @@ import {
   getLearnerProfile,
   upsertLearnerProfile,
 } from "../../services/learnerProfile.service.js";
-import { getOpenAICompatClient } from "../llm.js";
+import { getModelName, hasOpenAICompatProvider } from "../llm.js";
 import { formatZodIssues, runForcedToolCall, type LlmDeps } from "../shared/forcedToolCall.js";
 import { buildExtractSystemPrompt, buildExtractUserMessage } from "./prompt.js";
 import { buildExtractTool, extractedFactsSchema, type ExtractedFacts } from "./schema.js";
@@ -30,9 +30,8 @@ const MAX_OUTPUT_TOKENS = 512;
 export const EXTRACT_WINDOW = 6;
 
 function resolveDeps(): LlmDeps | null {
-  const oai = getOpenAICompatClient();
-  if (!oai) return null;
-  return { client: oai.client, model: env.COURSE_MAKER_MODEL ?? oai.model };
+  if (!hasOpenAICompatProvider()) return null;
+  return { model: env.COURSE_MAKER_MODEL ?? getModelName() };
 }
 
 /** The model call on its own, so the gating in `updateProfileFromChat` stays testable. */

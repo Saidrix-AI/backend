@@ -1,6 +1,6 @@
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose, { Types } from "mongoose";
-import type OpenAI from "openai";
+import type { ChatOpenAI } from "@langchain/openai";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildExtractTool } from "../src/agents/profile-extractor/schema.js";
 import { updateProfileFromChat } from "../src/agents/profile-extractor/index.js";
@@ -155,7 +155,7 @@ describe("writing what it found", () => {
     // Rejects on every attempt, including the repair round runForcedToolCall makes.
     const create = vi.fn().mockRejectedValue(new Error("upstream down"));
     const deps = {
-      client: { chat: { completions: { create } } } as unknown as OpenAI,
+      chat: { bindTools: () => ({ invoke: create }) } as unknown as ChatOpenAI,
       model: "fake/model",
     };
     await expect(updateProfileFromChat(userId, ["ami CSE 3rd year"], deps)).resolves.toEqual([]);

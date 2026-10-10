@@ -5,21 +5,12 @@ import { buildLessonBlueprint, buildSetupBlueprint, retrieveLessonGrounding } fr
 import { resolveLectureDeps, type LlmDeps } from "./call.js";
 import { classifyLesson } from "./classify.js";
 import { buildDownloadsBlock, type DownloadsResult } from "./downloads.js";
-import { buildLecturePlan, buildSetupPlan } from "./planner.js";
-import { buildResourcesBlock, type ResourcesResult } from "./resources.js";
 import type { LessonContext } from "./prompt.js";
-import {
-  assembledLectureSchema,
-  type EasyBlock,
-  type LessonKind,
-  type OutlineItem,
-  type PlannedBlock,
-  type SetupPlannedBlock,
-} from "./schema.js";
-import { runSetupTopicWorker, runSvgWorker, runTopicWorker, type SvgEmission } from "./workers.js";
-
-/** How many svg workers may be in flight at once. */
-const SVG_CONCURRENCY = 4;
+import { buildResourcesBlock, type ResourcesResult } from "./resources.js";
+import type { LessonBlueprint, LessonKind, OutlineItem, SetupBlueprint } from "./schema.js";
+import type { Blueprint } from "./sectionPrompts.js";
+import { lectureV3Schema, type LectureOutline, type Section, type SectionEmissionItem } from "./sections.js";
+import { runOutlinePlanner, runQuizWriter, runSectionWriter } from "./sectionWriter.js";
 
 export type { LessonContext } from "./prompt.js";
 
@@ -29,7 +20,6 @@ export interface LectureDeps {
   analyst?: LlmDeps;
   planner?: LlmDeps;
   worker?: LlmDeps;
-  svg?: LlmDeps;
   resources?: LlmDeps;
   downloads?: LlmDeps;
 }
@@ -38,25 +28,24 @@ export interface MadeLecture {
   title: string;
   /** Whatever the course was generated in — see validation/language.ts. */
   language: Language;
-  /** Which lane produced it — persisted so the classroom can label a setup guide. */
+  /** concept = an idea lesson; setup = an installation guide (checklist instead of exam). */
   kind: LessonKind;
-  outline: { id: number; title: string; duration: string }[];
-  blocks: Record<string, unknown>[];
+  outline: OutlineItem[];
+  sections: Section[];
 }
 
 /**
- * Emitted as the pipeline progresses, so a caller (lecture.service.ts) can
- * relay real stages to the classroom's loading screen instead of a bare
- * spinner. Purely observational — nothing here changes what gets generated.
+ * Emitted as the pipeline progresses, so lecture.service can relay real stages
+ * to the classroom's loading screen. Purely observational.
  */
 export type LectureProgressEvent =
   | { stage: "analyzing" }
   | { stage: "classified"; kind: LessonKind }
   | { stage: "analyzed"; concepts: number; visuals: number }
   | { stage: "planning" }
-  | { stage: "planned"; topics: number; easyBlocks: number; svgBlocks: number }
+  | { stage: "planned"; topics: number; sections: number }
   | { stage: "topic"; status: "start" | "done"; index: number; total: number; title: string }
-  | { stage: "svg"; status: "start" | "done" | "dropped"; index: number; total: number }
+  | { stage: "quiz"; status: "start" | "done" | "skipped" }
   | { stage: "downloads"; status: "start" | "done" | "skipped"; links?: number }
   | { stage: "resources"; status: "start" | "done" | "skipped"; links?: number }
   | { stage: "assembling" };
@@ -64,48 +53,15 @@ export type LectureProgressEvent =
 type Progress = (event: LectureProgressEvent) => void;
 
 /**
- * Starts the closing further-reading section, deliberately NOT awaited: it needs
- * only the lesson and the analyst's scope, both of which exist by the time it is
- * called, so its two searches and its call run alongside the planner and the
- * writers instead of adding to a wait the student is watching.
+ * One lecture pipeline for every lesson:
  *
- * buildResourcesBlock's contract is that it never throws; the `.catch` enforces
- * it at the seam, because the Promise.all it feeds is the one place where a
- * rejection would take the whole lecture with it.
- */
-function startResourcesJob(
-  ctx: LessonContext,
-  blueprint: Parameters<typeof buildResourcesBlock>[0]["blueprint"],
-  deps: LectureDeps | undefined,
-  onProgress?: Progress,
-): Promise<ResourcesResult | null> {
-  if (!isResourcesEnabled()) {
-    // Emitting nothing at all when the feature is off keeps the progress
-    // stream byte-identical to what it was before this existed.
-    return Promise.resolve(null);
-  }
-  onProgress?.({ stage: "resources", status: "start" });
-  return buildResourcesBlock({ ctx, blueprint, deps: deps?.resources })
-    .catch(() => null)
-    .then((r) => {
-      onProgress?.({
-        stage: "resources",
-        status: r ? "done" : "skipped",
-        ...(r ? { links: r.block.links.length } : {}),
-      });
-      return r;
-    });
-}
-
-/**
- * The concept lane: one analyst call (what does this lesson actually teach?) →
- * one planner call → parallel topic workers (easy blocks) + svg workers (one
- * call per diagram) → deterministic assembly in plan order with final ids
- * assigned here (planner/worker ids are never trusted) → full document
- * validation. No organizer LLM — assembly is plain code.
+ *   classify → ground (RAG + live search) → analyse → outline (topics and
+ *   sections, each tagged theory / practical / canvas) → one section writer
+ *   per topic in parallel (page content + tutor instructions together) → quiz
+ *   (concept) or checklist (setup) → resources / downloads → assemble.
  *
- * The setup lane (makeSetupLecture below) has the same shape and a different
- * arc; makeLecture routes between them.
+ * A setup lesson differs only in its analyst and in the writers' rules; the
+ * shape of what comes out is identical.
  */
 export async function makeLecture(
   ctx: LessonContext,
@@ -113,408 +69,177 @@ export async function makeLecture(
   onProgress?: Progress,
 ): Promise<MadeLecture> {
   onProgress?.({ stage: "analyzing" });
-
-  // The classifier must finish before we know which analyst to run, so it is
-  // run ALONGSIDE the two retrievals the analyst needs anyway — the routing
-  // decision costs no wall clock at all.
   const [kind, { grounding, freshness }] = await Promise.all([
     classifyLesson(ctx, deps?.classifier),
     retrieveLessonGrounding(ctx),
   ]);
   onProgress?.({ stage: "classified", kind });
 
-  if (kind === "setup") {
-    return makeSetupLecture(ctx, grounding, freshness, deps, onProgress);
-  }
-
   const analystDeps = deps?.analyst ?? resolveLectureDeps("analyst");
-  const plannerDeps = deps?.planner ?? resolveLectureDeps("planner");
-  const workerDeps = deps?.worker ?? resolveLectureDeps("worker");
-  const svgDeps = deps?.svg ?? resolveLectureDeps("svg");
-
-  // Read the lesson before shaping it. Every later call works from this one
-  // reading, which is also what keeps the parallel topic writers consistent.
-  const blueprint = await buildLessonBlueprint(ctx, grounding, freshness, analystDeps);
+  const blueprint: Blueprint =
+    kind === "setup"
+      ? { kind: "setup", bp: await buildSetupBlueprint(ctx, grounding, freshness, analystDeps) }
+      : { kind: "concept", bp: await buildLessonBlueprint(ctx, grounding, freshness, analystDeps) };
+  const lesson = blueprint.kind === "setup" ? setupBlueprintAsLesson(blueprint.bp) : blueprint.bp;
   onProgress?.({
     stage: "analyzed",
-    concepts: blueprint.concepts.length,
-    visuals: blueprint.visuals.length,
+    concepts: blueprint.kind === "setup" ? blueprint.bp.stages.length : blueprint.bp.concepts.length,
+    visuals: blueprint.bp.visuals.length,
   });
 
-  const resourcesJob = startResourcesJob(ctx, blueprint, deps, onProgress);
+  // The link sections need only the lesson and the analyst's scope, so they run
+  // alongside the planner and the writers instead of after them.
+  const resourcesJob = startJob("resources", onProgress, () =>
+    buildResourcesBlock({ ctx, blueprint: lesson, deps: deps?.resources }),
+  );
+  const downloadsJob: Promise<DownloadsResult | null> =
+    blueprint.kind === "setup"
+      ? startJob("downloads", onProgress, () =>
+          buildDownloadsBlock({ ctx, blueprint: blueprint.bp, deps: deps?.downloads ?? deps?.resources }),
+        )
+      : Promise.resolve(null);
 
   onProgress?.({ stage: "planning" });
-  const plan = await buildLecturePlan(ctx, blueprint, plannerDeps);
-
-  // Group the plan: easy blocks per topic (plan order) and svg blocks (plan order).
-  const easyByTopic = new Map<number, PlannedBlock[]>();
-  const svgPlanned: PlannedBlock[] = [];
-  for (const b of plan.blocks) {
-    if (b.type === "svg") {
-      svgPlanned.push(b);
-    } else {
-      const list = easyByTopic.get(b.topicId) ?? [];
-      list.push(b);
-      easyByTopic.set(b.topicId, list);
-    }
-  }
-
-  const topicById = new Map(plan.outline.map((t) => [t.id, t]));
+  const plan = await runOutlinePlanner(ctx, blueprint, deps?.planner);
   onProgress?.({
     stage: "planned",
-    topics: easyByTopic.size,
-    easyBlocks: plan.blocks.length - svgPlanned.length,
-    svgBlocks: svgPlanned.length,
+    topics: plan.topics.length,
+    sections: plan.topics.reduce((n, t) => n + t.sections.length, 0),
   });
 
-  // A topic worker that fails every attempt no longer sinks the lecture: the
-  // topic is dropped and the rest ships (see pruneFailedTopics for the two cases
-  // where that is not allowed and the failure still propagates). svg workers
-  // resolve to null on failure (block dropped, lecture ships).
-  const topicTotal = easyByTopic.size;
-  const topicJobs = [...easyByTopic.entries()].map(async ([topicId, planned], index): Promise<TopicOutcome> => {
-    const topic = topicById.get(topicId)!; // plan superRefine guarantees membership
-    onProgress?.({ stage: "topic", status: "start", index, total: topicTotal, title: topic.title });
-    try {
-      const blocks = await runTopicWorker(
-        ctx,
-        plan.title,
-        { id: topic.id, title: topic.title },
-        planned,
-        blueprint,
-        plan.outline,
-        workerDeps,
-      );
-      onProgress?.({ stage: "topic", status: "done", index, total: topicTotal, title: topic.title });
-      return { topicId, blocks };
-    } catch (error) {
-      // Reported as "done" to the loading screen on purpose: the student is
-      // watching a progress bar, and a stage that goes red on a lecture that
-      // still arrives complete-looking is worse than one that quietly finishes.
-      onProgress?.({ stage: "topic", status: "done", index, total: topicTotal, title: topic.title });
-      return { topicId, error };
-    }
-  });
+  const total = plan.topics.length;
+  const written = await Promise.all(
+    plan.topics.map(async (topic, index) => {
+      onProgress?.({ stage: "topic", status: "start", index, total, title: topic.title });
+      try {
+        return await runSectionWriter(ctx, plan, index, blueprint, deps?.worker);
+      } catch (error) {
+        console.warn(`[lecture-maker] topic ${index + 1} ("${topic.title}") failed:`, error instanceof Error ? error.message : error);
+        return error instanceof Error ? error : new Error(String(error));
+      } finally {
+        onProgress?.({ stage: "topic", status: "done", index, total, title: topic.title });
+      }
+    }),
+  );
 
-  // A visual-heavy lecture can plan a dozen svgs. Firing them all at once on
-  // the strong svg model invites rate limiting, so they go a few at a time.
-  const svgTotal = svgPlanned.length;
-  const runSvgBatched = async () => {
-    const out: (SvgEmission | null)[] = [];
-    for (let i = 0; i < svgPlanned.length; i += SVG_CONCURRENCY) {
-      const batch = svgPlanned.slice(i, i + SVG_CONCURRENCY).map((planned, j) => {
-        const index = i + j;
-        onProgress?.({ stage: "svg", status: "start", index, total: svgTotal });
-        return runSvgWorker(
-          ctx,
-          plan.title,
-          topicById.get(planned.topicId)?.title ?? "",
-          planned,
-          `s${index + 1}-`,
-          svgDeps,
-        ).then((res) => {
-          onProgress?.({ stage: "svg", status: res ? "done" : "dropped", index, total: svgTotal });
-          return res;
-        });
-      });
-      out.push(...(await Promise.all(batch)));
-    }
-    return out;
-  };
+  const kept = keepWrittenTopics(plan, written);
 
-  const [topicResults, svgResults, resources] = await Promise.all([
-    Promise.all(topicJobs),
-    runSvgBatched(),
-    resourcesJob,
-  ]);
+  const quizJob =
+    blueprint.kind === "concept"
+      ? (async () => {
+          onProgress?.({ stage: "quiz", status: "start" });
+          try {
+            const questions = await runQuizWriter(
+              ctx,
+              plan.title,
+              kept.map((k) => k.outline),
+              kept.flatMap((k) => k.sections.map((s) => ({ title: s.title, goal: s.tutor.goal }))),
+              blueprint.bp,
+              deps?.worker,
+            );
+            onProgress?.({ stage: "quiz", status: "done" });
+            return questions;
+          } catch (error) {
+            onProgress?.({ stage: "quiz", status: "skipped" });
+            console.warn("[lecture-maker] quiz failed:", error instanceof Error ? error.message : error);
+            return null;
+          }
+        })()
+      : Promise.resolve(null);
 
+  const [quiz, resources, downloads] = await Promise.all([quizJob, resourcesJob, downloadsJob]);
   onProgress?.({ stage: "assembling" });
 
-  const outline = pruneFailedTopics(plan.outline, topicResults, topicById);
-  const kept = new Set(outline.map((t) => t.id));
-  const queues = new Map<number, EasyBlock[]>();
-  for (const r of topicResults) {
-    if ("blocks" in r) queues.set(r.topicId, [...r.blocks]);
-  }
-  const svgQueue = [...svgResults];
+  return assemble(ctx, kind, plan.title, kept, { quiz, resources, downloads });
+}
 
-  // Assembly: walk the plan in order, pulling each block from its queue and
-  // assigning final sequential ids.
-  const blocks: Record<string, unknown>[] = [];
-  let n = 0;
-  for (const planned of plan.blocks) {
-    if (planned.type === "svg") {
-      // The shift happens BEFORE the dropped-topic check: svgQueue is positional
-      // against the plan's svg entries, so skipping one without consuming it
-      // would hand this drawing to the next svg block and misalign every
-      // diagram after it.
-      const emission = svgQueue.shift();
-      if (!emission) continue; // already warned in runSvgWorker
-      if (!kept.has(planned.topicId)) continue;
-      blocks.push({
-        id: `b${++n}`,
-        type: "svg",
-        topicId: planned.topicId,
-        svg: emission.svg,
-        alt: emission.alt,
-        ...(emission.caption ? { caption: emission.caption } : {}),
-      });
-    } else {
-      if (!kept.has(planned.topicId)) continue;
-      const block = queues.get(planned.topicId)?.shift();
-      if (!block) {
-        // Reachable now: the final-attempt reconcile in workers.ts accepts a
-        // short emission rather than losing the topic. Never crash assembly.
-        console.warn(`[lecture-maker] missing worker block for plan entry "${planned.brief.slice(0, 60)}"`);
-        continue;
-      }
-      blocks.push({ ...block, id: `b${++n}`, topicId: planned.topicId });
-    }
-  }
+type WrittenTopic = { outline: OutlineItem; sections: SectionEmissionItem[] };
 
-  const { outline: finalOutline, blocks: withResources } = appendResources(outline, blocks, resources, n);
-  return finish(ctx, plan.title, "concept", finalOutline, withResources);
+/**
+ * Drops topics whose writer failed every attempt, so one bad topic costs its
+ * own section rather than the lecture. Fewer than two surviving topics is not
+ * a lecture, and the original error is rethrown.
+ */
+function keepWrittenTopics(plan: LectureOutline, written: (SectionEmissionItem[] | Error)[]): WrittenTopic[] {
+  const kept: WrittenTopic[] = [];
+  plan.topics.forEach((t, i) => {
+    const r = written[i];
+    if (Array.isArray(r)) kept.push({ outline: { id: i + 1, title: t.title, duration: t.duration }, sections: r });
+  });
+  if (kept.length < 2) {
+    const first = written.find((r): r is Error => r instanceof Error);
+    throw first ?? new ApiError(502, "Lecture generation failed.");
+  }
+  return kept;
+}
+
+function startJob<T extends { block: { links: unknown[] } }>(
+  stage: "resources" | "downloads",
+  onProgress: Progress | undefined,
+  run: () => Promise<T | null>,
+): Promise<T | null> {
+  if (!isResourcesEnabled()) return Promise.resolve(null);
+  onProgress?.({ stage, status: "start" });
+  return run()
+    .catch(() => null)
+    .then((r) => {
+      onProgress?.({ stage, status: r ? "done" : "skipped", ...(r ? { links: r.block.links.length } : {}) });
+      return r;
+    });
 }
 
 /**
- * The setup lane: same pipeline shape, different arc. The guide is planned
- * around getting software running rather than around understanding an idea, so
- * there is no quiz and no svg — instead there is exactly one `downloads` block,
- * built from verified search results the way `resources` is, and a closing
- * verification checklist.
- *
- * `grounding` and `freshness` are handed in already retrieved: makeLecture had
- * to fetch them before it could know which lane this is.
+ * Final ids are assigned here, never trusted from a model: sections `s1…`,
+ * blocks `b1…`. The quiz closes the last topic as its own section; downloads
+ * open the first install topic; resources become a closing topic.
  */
-async function makeSetupLecture(
+function assemble(
   ctx: LessonContext,
-  grounding: string,
-  freshness: string,
-  deps?: LectureDeps,
-  onProgress?: Progress,
-): Promise<MadeLecture> {
-  const analystDeps = deps?.analyst ?? resolveLectureDeps("analyst");
-  const plannerDeps = deps?.planner ?? resolveLectureDeps("planner");
-  const workerDeps = deps?.worker ?? resolveLectureDeps("worker");
-
-  const blueprint = await buildSetupBlueprint(ctx, grounding, freshness, analystDeps);
-  // `concepts` carries the stage count here — the event shape is shared with the
-  // concept lane so the classroom's loading screen needs no second case.
-  onProgress?.({
-    stage: "analyzed",
-    concepts: blueprint.stages.length,
-    visuals: blueprint.visuals.length,
-  });
-
-  // Both link sections start now and are awaited with the writers, exactly like
-  // the concept lane's resources job. The downloads search is the one the
-  // student is actually waiting on, so it must not be serialised after them.
-  // Emitting nothing when the search feature is off keeps the progress stream
-  // free of a stage that was never going to happen, same as the concept lane.
-  const downloadsJob: Promise<DownloadsResult | null> = isResourcesEnabled()
-    ? (onProgress?.({ stage: "downloads", status: "start" }),
-      buildDownloadsBlock({ ctx, blueprint, deps: deps?.downloads ?? deps?.resources })
-        .catch(() => null)
-        .then((r) => {
-          onProgress?.({
-            stage: "downloads",
-            status: r ? "done" : "skipped",
-            ...(r ? { links: r.block.links.length } : {}),
-          });
-          return r;
-        }))
-    : Promise.resolve(null);
-  const resourcesJob = startResourcesJob(ctx, toResourcesBlueprint(blueprint), deps, onProgress);
-
-  onProgress?.({ stage: "planning" });
-  const plan = await buildSetupPlan(ctx, blueprint, plannerDeps);
-
-  // Everything except the downloads block is written by a topic worker; the
-  // downloads entry is a placeholder the server fills, the way an svg entry is.
-  const easyByTopic = new Map<number, SetupPlannedBlock[]>();
-  for (const b of plan.blocks) {
-    if (b.type === "downloads") continue;
-    const list = easyByTopic.get(b.topicId) ?? [];
-    list.push(b);
-    easyByTopic.set(b.topicId, list);
-  }
-
-  const topicById = new Map(plan.outline.map((t) => [t.id, t]));
-  onProgress?.({
-    stage: "planned",
-    topics: easyByTopic.size,
-    easyBlocks: plan.blocks.length - 1,
-    svgBlocks: 0,
-  });
-
-  const topicTotal = easyByTopic.size;
-  // Same resilience as the concept lane: a failed stage costs its own section,
-  // not the guide. pruneFailedTopics still refuses to drop the LAST topic — here
-  // it carries the closing checklist rather than the quiz, but a setup guide
-  // that ends without "did it work?" is just as broken.
-  const topicJobs = [...easyByTopic.entries()].map(async ([topicId, planned], index): Promise<TopicOutcome> => {
-    const topic = topicById.get(topicId)!; // plan superRefine guarantees membership
-    onProgress?.({ stage: "topic", status: "start", index, total: topicTotal, title: topic.title });
-    try {
-      const blocks = await runSetupTopicWorker(
-        ctx,
-        plan.title,
-        { id: topic.id, title: topic.title },
-        planned,
-        blueprint,
-        plan.outline,
-        workerDeps,
-      );
-      onProgress?.({ stage: "topic", status: "done", index, total: topicTotal, title: topic.title });
-      return { topicId, blocks };
-    } catch (error) {
-      onProgress?.({ stage: "topic", status: "done", index, total: topicTotal, title: topic.title });
-      return { topicId, error };
-    }
-  });
-
-  const [topicResults, downloads, resources] = await Promise.all([
-    Promise.all(topicJobs),
-    downloadsJob,
-    resourcesJob,
-  ]);
-
-  onProgress?.({ stage: "assembling" });
-
-  const outline = pruneFailedTopics(plan.outline, topicResults, topicById);
-  const kept = new Set(outline.map((t) => t.id));
-  const queues = new Map<number, EasyBlock[]>();
-  for (const r of topicResults) {
-    if ("blocks" in r) queues.set(r.topicId, [...r.blocks]);
-  }
-
-  const blocks: Record<string, unknown>[] = [];
-  let n = 0;
-  for (const planned of plan.blocks) {
-    if (!kept.has(planned.topicId)) continue;
-    if (planned.type === "downloads") {
-      // A failed search drops the section rather than the guide. The steps that
-      // follow still tell the student what to install; they just have to find
-      // the page themselves, which beats being sent to an invented address.
-      if (!downloads) {
-        console.warn(`[lecture-maker] no downloads section for "${ctx.topicTitle}" — entry skipped`);
-        continue;
-      }
-      blocks.push({ ...downloads.block, id: `b${++n}`, topicId: planned.topicId });
-      continue;
-    }
-    const block = queues.get(planned.topicId)?.shift();
-    if (!block) {
-      console.warn(`[lecture-maker] missing worker block for plan entry "${planned.brief.slice(0, 60)}"`);
-      continue;
-    }
-    blocks.push({ ...block, id: `b${++n}`, topicId: planned.topicId });
-  }
-
-  const { outline: finalOutline, blocks: withResources } = appendResources(outline, blocks, resources, n);
-  return finish(ctx, plan.title, "setup", finalOutline, withResources);
-}
-
-/**
- * The setup blueprint seen through the resources picker's eyes. That picker only
- * reads `scope` and `objectives`, so rather than teaching it a second shape the
- * setup blueprint is projected onto the one it already knows.
- */
-function toResourcesBlueprint(
-  bp: Awaited<ReturnType<typeof buildSetupBlueprint>>,
-): Parameters<typeof buildResourcesBlock>[0]["blueprint"] {
-  return {
-    scope: bp.goal,
-    objectives: bp.stages.map((s) => s.doesWhat).slice(0, 8),
-    assumedKnowledge: [],
-    concepts: bp.tools.map((t) => ({ name: t.name, why: t.whatItIs, hardBecause: "" })),
-    examples: [{ name: "setup", scenario: bp.goal, teaches: "" }],
-    misconceptions: [],
-    visuals: [],
-    outOfScope: bp.outOfScope,
-    currency: bp.currency,
-  };
-}
-
-/**
- * The Resources section closes the lecture, after the quiz (concept lane) or
- * after the checklist (setup lane). It gets its own outline topic so the
- * classroom shows it as a section of its own — with an id derived from the
- * highest existing one, not from the length: nothing requires the planner's ids
- * to be contiguous, and `length + 1` would collide with an existing topic on an
- * outline numbered 1, 2, 3, 5.
- */
-function appendResources(
-  outline: OutlineItem[],
-  blocks: Record<string, unknown>[],
-  resources: ResourcesResult | null,
-  lastBlockNumber: number,
-): { outline: OutlineItem[]; blocks: Record<string, unknown>[] } {
-  if (!resources) return { outline, blocks };
-  const topicId = Math.max(...outline.map((t) => t.id)) + 1;
-  return {
-    outline: [...outline, { id: topicId, title: resources.topicTitle, duration: "1:00" }],
-    blocks: [...blocks, { ...resources.block, id: `b${lastBlockNumber + 1}`, topicId }],
-  };
-}
-
-/** What a settled topic job carries: its blocks, or the reason it never produced any. */
-type TopicOutcome = { topicId: number; blocks: EasyBlock[] } | { topicId: number; error: unknown };
-
-/**
- * Drops the topics whose writer failed every attempt, so one bad topic costs its
- * own section instead of the whole lecture. Previously any topic failure threw,
- * which meant a ~40s pipeline run — every sibling worker, every diagram, the
- * resource search — was binned and nothing was persisted, and the client, seeing
- * a 404, started the entire run again.
- *
- * Two cases where dropping is NOT allowed and the original error is rethrown:
- *
- *  - The LAST outline topic. The graded quiz must be the final block and must
- *    belong to the final topic (see lecturePlanSchema's superRefine); dropping
- *    it would ship a lecture whose closing exam silently vanished, and that exam
- *    is what updates the student's knowledge profile.
- *  - Anything that would leave fewer than two topics — assembledLectureSchema
- *    requires `outline` to have at least 2, so the lecture would fail whole-
- *    document validation moments later with a far less useful message.
- */
-function pruneFailedTopics(
-  outline: OutlineItem[],
-  results: TopicOutcome[],
-  topicById: Map<number, OutlineItem>,
-): OutlineItem[] {
-  const failed = results.filter((r): r is { topicId: number; error: unknown } => "error" in r);
-  if (failed.length === 0) return outline;
-
-  const rethrow = (why: string) => {
-    console.error(`[lecture-maker] cannot ship without topic ${failed[0]!.topicId} (${why}) — failing the lecture`);
-    throw failed[0]!.error;
-  };
-
-  const lastTopicId = outline[outline.length - 1]?.id;
-  if (failed.some((f) => f.topicId === lastTopicId)) rethrow("it is the final topic and carries the quiz");
-
-  const failedIds = new Set(failed.map((f) => f.topicId));
-  const remaining = outline.filter((t) => !failedIds.has(t.id));
-  if (remaining.length < 2) rethrow("fewer than 2 topics would remain");
-
-  for (const f of failed) {
-    const title = topicById.get(f.topicId)?.title ?? "?";
-    const reason = f.error instanceof Error ? f.error.message : String(f.error);
-    console.warn(`[lecture-maker] shipping without topic ${f.topicId} ("${title}"): ${reason}`);
-  }
-  return remaining;
-}
-
-/** Whole-document validation, shared by both lanes. A failure here is a pipeline bug. */
-function finish(
-  ctx: LessonContext,
-  title: string,
   kind: LessonKind,
-  outline: OutlineItem[],
-  blocks: Record<string, unknown>[],
+  title: string,
+  topics: WrittenTopic[],
+  extra: {
+    quiz: Awaited<ReturnType<typeof runQuizWriter>> | null;
+    resources: ResourcesResult | null;
+    downloads: DownloadsResult | null;
+  },
 ): MadeLecture {
-  const parsed = assembledLectureSchema.safeParse({ title, outline, blocks });
+  let s = 0;
+  let b = 0;
+  const outline = topics.map((t) => t.outline);
+  const sections: Section[] = [];
+  const push = (topicId: number, title: string, kindOf: Section["kind"], blocks: Record<string, unknown>[], tutor?: Section["tutor"]) => {
+    const id = `s${++s}`;
+    sections.push({
+      id,
+      topicId,
+      title,
+      kind: kindOf,
+      blocks: blocks.map((blk) => ({ ...blk, id: `b${++b}`, topicId, sectionId: id })) as Section["blocks"],
+      ...(tutor ? { tutor } : {}),
+    });
+  };
+
+  topics.forEach((t, i) => {
+    if (i === 0 && extra.downloads) {
+      const bn = (ctx.language ?? DEFAULT_LANGUAGE).startsWith("bn");
+      push(t.outline.id, bn ? "ডাউনলোড" : "Downloads", "theory", [extra.downloads.block]);
+    }
+    for (const sec of t.sections) push(t.outline.id, sec.title, sec.kind, sec.blocks, sec.tutor);
+  });
+
+  if (extra.quiz && extra.quiz.length > 0) {
+    const last = outline[outline.length - 1]!;
+    push(last.id, quizTitle(ctx.language), "theory", [{ type: "quiz", questions: extra.quiz }]);
+  }
+
+  if (extra.resources) {
+    const topicId = Math.max(...outline.map((o) => o.id)) + 1;
+    outline.push({ id: topicId, title: extra.resources.topicTitle, duration: "1:00" });
+    push(topicId, extra.resources.topicTitle, "theory", [extra.resources.block]);
+  }
+
+  const parsed = lectureV3Schema.safeParse({ title, outline, sections });
   if (!parsed.success) {
     console.error("[lecture-maker] assembled lecture failed validation:", parsed.error.issues.slice(0, 12));
     throw new ApiError(502, "Lecture assembly failed validation.");
@@ -523,7 +248,29 @@ function finish(
     title,
     language: ctx.language ?? DEFAULT_LANGUAGE,
     kind,
-    outline,
-    blocks: parsed.data.blocks as MadeLecture["blocks"],
+    outline: parsed.data.outline,
+    sections: parsed.data.sections,
+  };
+}
+
+function quizTitle(language: Language | undefined): string {
+  return (language ?? DEFAULT_LANGUAGE).startsWith("bn") ? "বোঝাপড়া যাচাই" : "Check your understanding";
+}
+
+/**
+ * The setup blueprint projected onto the concept-lane shape, for the resources
+ * picker (reads scope/objectives) — pitfalls become misconceptions.
+ */
+function setupBlueprintAsLesson(bp: SetupBlueprint): LessonBlueprint {
+  return {
+    scope: bp.goal,
+    objectives: bp.stages.map((st) => st.doesWhat).slice(0, 8),
+    assumedKnowledge: bp.prerequisites.map((p) => p.requirement).slice(0, 6),
+    concepts: bp.tools.map((t) => ({ name: t.name, why: t.whatItIs, hardBecause: t.whyThisOne })),
+    examples: [{ name: "setup", scenario: bp.goal, teaches: "" }],
+    misconceptions: bp.pitfalls.slice(0, 6).map((p) => ({ mistake: p.symptom, whatBreaks: p.cause })),
+    visuals: [],
+    outOfScope: bp.outOfScope,
+    currency: bp.currency,
   };
 }

@@ -1,4 +1,6 @@
-import type OpenAI from "openai";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import type { ChatOpenAI } from "@langchain/openai";
+import { gatedLlmCall } from "../shared/llmGate.js";
 import { ROUTINE_SETUP_HEADERS } from "../tools/prompts/routine.js";
 import { ROUTER_PROMPT } from "./prompt.js";
 import type { HistoryMessage } from "./stream.js";
@@ -52,6 +54,31 @@ export function isRoutineSetupAnswer(message: string): boolean {
 const MAX_HISTORY_MESSAGES = 8;
 const MAX_MESSAGE_CHARS = 400;
 
+/**
+ * The router sits in front of every chat turn, so its budget is a latency
+ * decision, not a correctness one — a router that has not answered by now is
+ * worse than no router, and failing returns null, which just skips forcing.
+ * Raised from 10s when the default model became a reasoning model: those spend
+ * their first tokens thinking, and 10s was cutting them off mid-thought, which
+ * disabled forced tools on every turn rather than occasionally.
+ */
+const ROUTER_TIMEOUT_MS = 20_000;
+
+/**
+ * The JSON out of a reply, tolerating a reasoning model that wraps it in a
+ * ```json fence or pads it with a sentence. response_format:"json_object" would
+ * be the strict fix, but not every model on TokenRouter accepts the field, and
+ * a router that throws is a router that silently stops forcing tools.
+ */
+function jsonFrom(content: unknown): string {
+  const text = typeof content === "string" ? content : "";
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const body = (fenced?.[1] ?? text).trim();
+  const start = body.indexOf("{");
+  const end = body.lastIndexOf("}");
+  return start >= 0 && end > start ? body.slice(start, end + 1) : body;
+}
+
 function transcript(history: HistoryMessage[]): string {
   if (history.length === 0) return "(none)";
   return history
@@ -60,29 +87,35 @@ function transcript(history: HistoryMessage[]): string {
     .join("\n");
 }
 
+/**
+ * Output cap. Generous for a 3-field JSON object, because a reasoning model
+ * spends part of the budget thinking before it writes any of it.
+ */
+export const ROUTER_MAX_TOKENS = 512;
+
 /** Classifies the turn; returns null on any failure so the caller can skip forcing. */
 export async function classifyCourseIntent(
-  client: OpenAI,
-  model: string,
+  chat: ChatOpenAI,
   history: HistoryMessage[],
   userMessage: string,
   signal?: AbortSignal,
 ): Promise<CourseRoute | null> {
   try {
-    const completion = await client.chat.completions.create(
-      {
-        model,
-        messages: [
-          { role: "system", content: ROUTER_PROMPT },
-          { role: "user", content: `Chat so far:\n${transcript(history)}\n\nLATEST student message: ${userMessage.slice(0, MAX_MESSAGE_CHARS)}` },
+    // One request, but on the SAME account-wide quota as everything else, and it
+    // fires on every chat turn — ungated it was the cheapest way to overspend
+    // the window. See agents/shared/llmGate.ts.
+    const reply = await gatedLlmCall(() =>
+      chat.invoke(
+        [
+          new SystemMessage(ROUTER_PROMPT),
+          new HumanMessage(
+            `Chat so far:\n${transcript(history)}\n\nLATEST student message: ${userMessage.slice(0, MAX_MESSAGE_CHARS)}`,
+          ),
         ],
-        max_tokens: 60,
-        temperature: 0,
-        response_format: { type: "json_object" },
-      },
-      { signal, timeout: 10_000, maxRetries: 0 },
+        { signal, options: { timeout: ROUTER_TIMEOUT_MS, maxRetries: 0 } },
+      ),
     );
-    const raw = JSON.parse(completion.choices?.[0]?.message?.content ?? "") as {
+    const raw = JSON.parse(jsonFrom(reply.content)) as {
       intent?: unknown;
       knowledge_known?: unknown;
       routine_ready?: unknown;
@@ -115,6 +148,7 @@ export function historyHasProposal(history: HistoryMessage[]): boolean {
 
 export type ForcedTool =
   | "generate_course"
+  | "create_path_courses"
   | "propose_courses"
   | "start_learning_intake"
   | "ask_routine_setup"
@@ -137,7 +171,7 @@ export type ForcedTool =
  * like picking courses), so we must NOT fabricate a course by forcing generation.
  */
 export function forcedToolFor(route: CourseRoute, hasProposal: boolean): ForcedTool | null {
-  if (route.intent === "selection") return hasProposal ? "generate_course" : null;
+  if (route.intent === "selection") return hasProposal ? "create_path_courses" : null;
   if (route.intent === "routine") {
     return route.routineReady ? "list_courses" : "ask_routine_setup";
   }

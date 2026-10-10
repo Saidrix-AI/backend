@@ -55,7 +55,13 @@ export async function embed(texts: string[], timeoutMs = BATCH_TIMEOUT_MS): Prom
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE);
     const res = await oai.embeddings.create(
-      { model: ragConfig.embeddingModel, input: batch },
+      // `dimensions` pins the vector size to the index's: gemini-embedding-001
+      // returns 3072 unless asked, and Pinecone rejects a size mismatch.
+      {
+        model: ragConfig.embeddingModel,
+        input: batch,
+        ...(ragConfig.embeddingDimensions ? { dimensions: ragConfig.embeddingDimensions } : {}),
+      },
       { timeout: timeoutMs, maxRetries: RETRIES },
     );
 

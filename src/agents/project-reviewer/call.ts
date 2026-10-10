@@ -1,6 +1,6 @@
 import { env } from "../../config/env.js";
 import { ApiError } from "../../utils/apiError.js";
-import { getOpenAICompatClient } from "../llm.js";
+import { getModelName, hasOpenAICompatProvider } from "../llm.js";
 import {
   runForcedToolCall as runSharedForcedToolCall,
   type ForcedToolCallOptions,
@@ -17,11 +17,10 @@ export { formatZodIssues } from "../shared/forcedToolCall.js";
 export type { LlmDeps, ParseResult } from "../shared/forcedToolCall.js";
 
 export function resolveReviewDeps(): LlmDeps {
-  const oai = getOpenAICompatClient();
-  if (!oai) {
+  if (!hasOpenAICompatProvider()) {
     throw new ApiError(503, "Project review needs an OpenAI-compatible LLM provider (openai or openrouter).");
   }
-  return { client: oai.client, model: env.PROJECT_REVIEW_MODEL ?? oai.model };
+  return { model: env.PROJECT_REVIEW_MODEL ?? getModelName() };
 }
 
 export type ReviewToolCallOptions<T> = Omit<ForcedToolCallOptions<T>, "maxTokens" | "label"> &

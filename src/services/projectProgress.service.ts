@@ -33,6 +33,20 @@ export async function startProject(userId: string, projectId: string): Promise<v
   const project = await ownedProject(userId, projectId);
   if (project && (await lockForProject(userId, project)).locked) return;
 
+  // A row may already exist carrying only the deadline clock — status
+  // "unlocked", written when the lesson that opens this project was finished.
+  // That one has to be promoted, and a plain insert-only upsert would leave it
+  // reading "not started" after the student started it.
+  //
+  // Scoped to `status: "unlocked"` rather than set unconditionally: an
+  // unconditional $set would also drag an ARCHIVED or COMPLETED project back
+  // into progress, which is the guarantee the insert-only version was giving.
+  const promoted = await ProjectProgressModel.updateOne(
+    { userId: oid(userId), projectId, status: "unlocked" },
+    { $set: { status: "in_progress" } },
+  );
+  if (promoted.matchedCount > 0) return;
+
   await ProjectProgressModel.updateOne(
     { userId: oid(userId), projectId },
     { $setOnInsert: { startedAt: new Date(), status: "in_progress" } },

@@ -2,7 +2,7 @@ import type OpenAI from "openai";
 import { z } from "zod";
 import { env } from "../../config/env.js";
 import { languageInstruction, type Language } from "../../validation/language.js";
-import { getOpenAICompatClient } from "../llm.js";
+import { getModelName, hasOpenAICompatProvider } from "../llm.js";
 import { formatZodIssues, runForcedToolCall, type LlmDeps } from "../shared/forcedToolCall.js";
 import {
   generatedQuestionSchema,
@@ -45,6 +45,8 @@ export interface ProbeContext {
   /** Everything the student has answered so far, in order. */
   answers: IntakeAnswer[];
   language: Language;
+  /** The matched curriculum template, so the questions test its real syllabus. */
+  curriculum?: string;
 }
 
 /** `ask: false` carries no questions; `ask: true` always carries at least one. */
@@ -129,6 +131,9 @@ function buildUserMessage(ctx: ProbeContext): string {
     `What the student asked for: ${ctx.objective}`,
     `Subject kind: ${ctx.topicKind}`,
     "",
+    ...(ctx.curriculum
+      ? [ctx.curriculum, "", "Any questions you write must test topics from these modules, not general trivia.", ""]
+      : []),
     "What they have told you so far:",
     transcript,
     "",
@@ -137,9 +142,8 @@ function buildUserMessage(ctx: ProbeContext): string {
 }
 
 function resolveDeps(): LlmDeps | null {
-  const oai = getOpenAICompatClient();
-  if (!oai) return null;
-  return { client: oai.client, model: env.ASSESSMENT_MODEL ?? env.COURSE_MAKER_MODEL ?? oai.model };
+  if (!hasOpenAICompatProvider()) return null;
+  return { model: env.ASSESSMENT_MODEL ?? env.COURSE_MAKER_MODEL ?? getModelName() };
 }
 
 /**

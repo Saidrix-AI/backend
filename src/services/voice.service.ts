@@ -2,6 +2,8 @@ import { AccessToken, AgentDispatchClient, RoomServiceClient } from "livekit-ser
 import { env } from "../config/env.js";
 import { assertLessonEnterable, getLectureByLessonId } from "./lecture.service.js";
 import { EnrollmentModel } from "../database/models/enrollment.model.js";
+import { ApiError } from "../utils/apiError.js";
+import { logger } from "../utils/logger.js";
 
 // LiveKit's server API is HTTP(S) even when clients connect over ws(s).
 const livekitHost = env.LIVEKIT_URL.replace(/^ws/, "http");
@@ -52,6 +54,50 @@ async function ensureTutorDispatched(roomName: string, session: string): Promise
 }
 
 /**
+ * Refuses a new class once the speech provider's concurrency is spoken for.
+ *
+ * Cartesia bills a plan's worth of SIMULTANEOUS requests, not a monthly pool,
+ * so the limit is on classes in progress. Past it, Cartesia rejects the
+ * synthesis — which surfaces as a tutor that joins the room and then says
+ * nothing, the single worst failure this product has, because it looks like a
+ * bug in the class rather than a queue.
+ *
+ * Counted from live rooms rather than from a counter we keep, because the truth
+ * is LiveKit's: a crashed worker or a browser that never disconnected would
+ * leave our own number drifting up until nobody could start a class at all.
+ *
+ * Reconnecting into a room that already exists is always allowed — the student
+ * is already counted, and turning a dropped connection into a refusal would
+ * punish exactly the person the limit is not about.
+ *
+ * Fails OPEN. If LiveKit cannot be listed we do not know the number, and
+ * guessing "too many" would close the product over a monitoring blip.
+ */
+async function assertCapacity(roomName: string): Promise<void> {
+  const limit = env.VOICE_MAX_CONCURRENT_SESSIONS;
+  if (limit <= 0) return;
+
+  let rooms;
+  try {
+    rooms = await roomService.listRooms();
+  } catch (err) {
+    logger.warn({ err }, "could not count live classes — allowing this one");
+    return;
+  }
+
+  const live = rooms.filter((r) => r.name.startsWith("voice_"));
+  if (live.some((r) => r.name === roomName)) return;
+  if (live.length < limit) return;
+
+  logger.warn({ live: live.length, limit }, "voice concurrency reached — refusing a new class");
+  throw new ApiError(
+    429,
+    "All the tutor's lines are busy right now. The lesson is open to read, and voice will " +
+      "come back in a few minutes — try again then.",
+  );
+}
+
+/**
  * Creates (or reuses) the deterministic per-user-per-lesson LiveKit room and
  * mints a participant token for the student. Room metadata carries everything
  * the voice agent needs to run the session; the deterministic name means a
@@ -81,6 +127,7 @@ export async function createVoiceSession(
   }
 
   const roomName = `voice_${userId}_${lessonId}`;
+  await assertCapacity(roomName);
   const session = JSON.stringify({
     userId,
     courseId,

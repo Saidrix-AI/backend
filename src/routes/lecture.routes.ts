@@ -8,8 +8,17 @@ import { validateBody } from "../middleware/validate.middleware.js";
 // authenticates as the student with its own signed token.
 const positionSchema = z.object({
   blockIndex: z.number().int().min(0).max(5000),
-  mode: z.enum(["lecture", "qa", "paused", "done"]).optional(),
+  mode: z.enum(["lecture", "qa", "paused", "awaiting", "dormant", "done"]).optional(),
   courseId: z.string().max(80).optional(),
+  // Where the TEACHING was, for a lecture with beats. Empty strings rather than
+  // omitted when the agent has no beat — an absent field would leave the last
+  // saved beat in place and resume a concept the student has already left.
+  beatId: z.string().max(40).optional(),
+  beatPhase: z.string().max(24).optional(),
+  // The current topic's opening-question result: beat ids the student already
+  // knew / half knew. Lets a class resumed mid-topic skip what they had.
+  knownBeats: z.array(z.string().max(40)).max(12).optional(),
+  partlyBeats: z.array(z.string().max(40)).max(12).optional(),
 });
 
 // One picked option index per question. Bounded so a hostile client can't post
@@ -20,8 +29,9 @@ const submitQuizSchema = z.object({
 });
 
 /**
- * The three lecture routes the voice agent is allowed to call: read the lecture
- * it narrates, and read/write the student's position in it.
+ * The lecture routes the voice agent is allowed to call: read the lecture it
+ * narrates, read/write the student's position in it, and what it needs for the
+ * class's opening and goodbye.
  *
  * Mounted ahead of `lectureRouter` (see routes/index.ts) so the allowlist is
  * structural rather than a rule someone has to remember. Anything not matched
@@ -38,6 +48,26 @@ voiceAgentLectureRouter.put(
   "/:lessonId/position",
   validateBody(positionSchema),
   lectureController.savePosition,
+);
+// What comes after this lesson, read by the tutor for its goodbye. On this
+// router because the agent is the only caller that needs it, and it needs it at
+// the one moment the student is still in the room.
+voiceAgentLectureRouter.get("/:lessonId/next", lectureController.getNextUp);
+// Read by the tutor as a class starts, to decide whether to open topics by
+// asking or by teaching. Numbers and enums only — nothing from the profile.
+voiceAgentLectureRouter.get("/:lessonId/learner-signal", lectureController.getLearnerSignal);
+// The tutor's memory and the web. Agent-only — the handlers refuse a student's
+// own token, since a class's notes are the tutor's working record.
+voiceAgentLectureRouter.get("/:lessonId/tutor-context", lectureController.getTutorContext);
+voiceAgentLectureRouter.put(
+  "/:lessonId/class-notes",
+  validateBody(z.object({ notes: z.string().max(4000) })),
+  lectureController.saveClassNotes,
+);
+voiceAgentLectureRouter.post(
+  "/:lessonId/web-search",
+  validateBody(z.object({ query: z.string().trim().min(2).max(300) })),
+  lectureController.tutorWebSearch,
 );
 
 export const lectureRouter = Router();

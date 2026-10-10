@@ -1,7 +1,7 @@
 import { env } from "../../config/env.js";
 import type { Language } from "../../validation/language.js";
 import { ApiError } from "../../utils/apiError.js";
-import { getOpenAICompatClient } from "../llm.js";
+import { getModelName, hasOpenAICompatProvider } from "../llm.js";
 import {
   formatZodIssues,
   runForcedToolCall,
@@ -34,11 +34,10 @@ export { QUESTIONS_PER_ROUND, TOTAL_ROUNDS } from "./schema.js";
 const MAX_OUTPUT_TOKENS = 4096;
 
 export function resolveProfilerDeps(): LlmDeps {
-  const oai = getOpenAICompatClient();
-  if (!oai) {
+  if (!hasOpenAICompatProvider()) {
     throw new ApiError(503, "The knowledge check needs an OpenAI-compatible LLM provider (openai or openrouter).");
   }
-  return { client: oai.client, model: env.ASSESSMENT_MODEL ?? env.COURSE_MAKER_MODEL ?? oai.model };
+  return { model: env.ASSESSMENT_MODEL ?? env.COURSE_MAKER_MODEL ?? getModelName() };
 }
 
 /** Generates one round's questions, trimmed to the round size. */

@@ -1,8 +1,11 @@
+import { HumanMessage, SystemMessage, type AIMessage } from "@langchain/core/messages";
 import type OpenAI from "openai";
 
 import { env } from "../../config/env.js";
-import { getOpenAICompatClient } from "../llm.js";
+import { getChatModelFor } from "../llm.js";
 import { svgDefaultModel } from "./call.js";
+import { gatedLlmCall } from "../shared/llmGate.js";
+import { recordUsage } from "../shared/tokenLedger.js";
 
 /**
  * Shows the rendered drawing to a vision model and asks what is wrong with it.
@@ -109,42 +112,44 @@ function isCapabilityError(err: unknown): boolean {
 export async function critiqueDiagram(png: Buffer, ctx: CritiqueContext): Promise<string[]> {
   if (!env.LECTURE_SVG_VISION_ENABLED || imageUnsupported) return [];
 
-  const oai = getOpenAICompatClient();
-  if (!oai) return [];
   const model = env.LECTURE_SVG_VISION_MODEL ?? env.LECTURE_SVG_MODEL ?? svgDefaultModel(env.LLM_PROVIDER);
+  // The critic writes at most three short sentences; anything more is a model
+  // that has started redesigning the drawing.
+  const chat = getChatModelFor(model, 400);
+  if (!chat) return [];
 
   try {
-    const completion = await oai.client.chat.completions.create(
-      {
-        model,
-        messages: [
-          { role: "system", content: SYSTEM },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: `This diagram was drawn to show: ${ctx.brief}\nIts description reads: ${ctx.alt}\n\nReview the image.`,
-              },
-              {
-                type: "image_url",
-                image_url: { url: `data:image/png;base64,${png.toString("base64")}` },
-              },
-            ],
-          },
-        ],
-        tools: [REVIEW_TOOL],
-        tool_choice: { type: "function", function: { name: REVIEW_TOOL.function.name } },
-        // The critic writes at most three short sentences; anything more is a
-        // model that has started redesigning the drawing.
-        max_tokens: 400,
-      },
-      { timeout: env.LECTURE_SVG_RENDER_TIMEOUT_MS * 2, maxRetries: 0 },
-    );
+    // The only LLM call in the pipeline that does not go through
+    // runForcedToolCall, so it needs the provider throttle applied by hand.
+    const reply = (await gatedLlmCall(() =>
+      chat
+        .bindTools([REVIEW_TOOL], {
+          tool_choice: { type: "function", function: { name: REVIEW_TOOL.function.name } },
+        })
+        .invoke(
+          [
+            new SystemMessage(SYSTEM),
+            new HumanMessage({
+              content: [
+                {
+                  type: "text",
+                  text: `This diagram was drawn to show: ${ctx.brief}\nIts description reads: ${ctx.alt}\n\nReview the image.`,
+                },
+                {
+                  type: "image_url",
+                  image_url: { url: `data:image/png;base64,${png.toString("base64")}` },
+                },
+              ],
+            }),
+          ],
+          { options: { timeout: env.LECTURE_SVG_RENDER_TIMEOUT_MS * 2, maxRetries: 0 } },
+        ),
+    )) as AIMessage;
+    recordUsage("vision_critic", model, reply);
 
-    const call = completion.choices[0]?.message?.tool_calls?.[0];
-    if (!call || call.type !== "function") return [];
-    const payload = JSON.parse(call.function.arguments || "{}") as ReviewPayload;
+    const call = reply.tool_calls?.[0];
+    if (!call) return [];
+    const payload = call.args as ReviewPayload;
     if (payload.ok === true) return [];
     if (!Array.isArray(payload.issues)) return [];
 

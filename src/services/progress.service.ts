@@ -5,8 +5,10 @@ import { QuizAttemptModel } from "../database/models/quizAttempt.model.js";
 import { RoutineItemModel } from "../database/models/routineItem.model.js";
 import { StudySessionModel } from "../database/models/studySession.model.js";
 import { ProjectProgressModel } from "../database/models/projectProgress.model.js";
+import { ProjectModel } from "../database/models/project.model.js";
 import { CourseModel } from "../database/models/course.model.js";
 import { ApiError } from "../utils/apiError.js";
+import { logger } from "../utils/logger.js";
 import { logActivity } from "./activity.service.js";
 
 function oid(userId: string): Types.ObjectId {
@@ -249,8 +251,57 @@ export async function completeLesson(
   if (res.modifiedCount || res.upsertedCount) {
     await logActivity(userId, "lesson", "Completed a lesson", courseId);
     await evaluateCourseAchievements(userId, courseId);
+    await startDeadlines(userId, courseId, lessonId);
   }
 }
+
+/**
+ * Starts the submission clock on any project this lesson just opened.
+ *
+ * Whether a project is locked stays DERIVED from the student's completed
+ * lessons (projectGate) — this only records WHEN it became available, which is
+ * the one fact a deadline needs and the one fact nothing else timestamps.
+ *
+ * Inside the "was this lesson actually new" branch on purpose: re-completing a
+ * lesson must not restart a deadline the student is already running against.
+ * `$setOnInsert` carries the same rule for the row itself.
+ *
+ * Best-effort throughout. This runs at the end of a class, after the lesson is
+ * already checked off, and a project whose clock failed to start is a project
+ * with no deadline — which is what every project planned before this existed
+ * has anyway.
+ */
+async function startDeadlines(userId: string, courseId: string, lessonId: string): Promise<void> {
+  try {
+    const projects = await ProjectModel.find(
+      { userId: oid(userId), courseId, unlockLessonId: lessonId, submitWithinDays: { $gt: 0 } },
+      { _id: 1, submitWithinDays: 1 },
+    ).lean();
+    if (projects.length === 0) return;
+
+    const unlockedAt = new Date();
+    await Promise.all(
+      projects.map((p) =>
+        ProjectProgressModel.updateOne(
+          { userId: oid(userId), projectId: String(p._id) },
+          {
+            $setOnInsert: {
+              status: "unlocked",
+              startedAt: unlockedAt,
+              unlockedAt,
+              dueAt: new Date(unlockedAt.getTime() + (p.submitWithinDays ?? 0) * DAY_MS),
+            },
+          },
+          { upsert: true },
+        ),
+      ),
+    );
+  } catch (err) {
+    logger.warn({ err, lessonId }, "could not start project deadlines");
+  }
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Records one exam attempt. The score is computed server-side by

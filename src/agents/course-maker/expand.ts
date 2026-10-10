@@ -31,7 +31,10 @@ async function expandChapter(
   // and a testing chapter of the same course have different current answers.
   // Chapters that search near-identical topics share the freshness cache.
   const [grounding, freshness] = await Promise.all([
-    retrieveGrounding(`${chapter.title} ${gen.title}`, { topK: 4 }),
+    retrieveGrounding(`${chapter.title} ${gen.title}`, {
+      topK: 4,
+      ...(brief.template ? { sourcePath: brief.template.sourcePath } : {}),
+    }),
     retrieveFreshness(`${gen.title} ${chapter.title}`, {
       intent: "current version deprecated best practices",
       label: "course-maker",
@@ -100,6 +103,71 @@ export function enforceLessonCap(chapters: (ExpandedChapter | null)[], cap = 59)
       else break; // one module with one lesson — cannot trim without emptying it
     }
   }
+}
+
+/**
+ * Lesson titles that are installation/setup work. Used only as a safety net on
+ * chapter 1, after the prompts have already said "no setup lessons" — the one
+ * setup lesson the course owes the student is inserted separately.
+ */
+const SETUP_TITLE = /\b(install|installing|installation|setup|set up|virtual env\w*|venv)\b|ইনস্টল|সেটআপ|ভার্চুয়াল এনভায়রনমেন্ট/i;
+
+const SETUP_TEXT: Record<string, { module: string; title: string; brief: string; summary: string }> = {
+  en: {
+    module: "Getting set up",
+    title: "Install the tools and run your first program",
+    brief:
+      "One short beginner lesson: install the language/runtime and one code editor with default settings, then write and run a first tiny program to prove it works. Nothing else — no virtual environments, no terminal tutorial, no extra configuration.",
+    summary: "Install what this course needs and run a first program.",
+  },
+  bn: {
+    module: "শুরু করার প্রস্তুতি",
+    title: "প্রয়োজনীয় tool install করে প্রথম program চালানো",
+    brief:
+      "একটি ছোট beginner lesson: language/runtime এবং একটি code editor default setting-এ install করা, তারপর একটি ছোট প্রথম program লিখে চালিয়ে দেখা যে সব কাজ করছে। এর বাইরে কিছু নয় — virtual environment, terminal tutorial বা বাড়তি configuration নয়।",
+    summary: "এই course-এর জন্য দরকারি tool install করে প্রথম program চালানো।",
+  },
+};
+
+/**
+ * Puts the course's ONE setup lesson first in chapter 1, and strips any other
+ * installation lesson a writer produced there anyway.
+ *
+ * Called before the project planner, so "unlock after lesson N of chapter 1"
+ * already counts the setup lesson. Mutates `written`.
+ */
+export function insertSetupLesson(
+  gen: GeneratedCourse,
+  brief: Pick<CourseBrief, "needsSetupLesson" | "language">,
+  written: (ExpandedChapter | null)[],
+): void {
+  if (!brief.needsSetupLesson || gen.chapters.length === 0) return;
+  const text = SETUP_TEXT[String(brief.language ?? "en")] ?? SETUP_TEXT.en!;
+  const setup = {
+    title: gen.setupLesson?.title ?? text.title,
+    summary: text.summary,
+    brief: gen.setupLesson?.brief ?? text.brief,
+    durationMin: 20,
+  };
+
+  const first = written[0];
+  if (!first) {
+    // The chapter's writer failed: the chapter still exists, and now it at
+    // least holds the lesson the student cannot start without.
+    written[0] = {
+      summary: gen.chapters[0]!.brief.slice(0, 600),
+      outcomes: [text.summary],
+      estimatedHours: 1,
+      difficulty: "Beginner",
+      modules: [{ title: text.module, summary: text.summary, topics: [setup] }],
+    };
+    return;
+  }
+  for (const mod of first.modules) {
+    mod.topics = mod.topics.filter((t) => !SETUP_TITLE.test(t.title));
+  }
+  first.modules = first.modules.filter((m) => m.topics.length > 0);
+  first.modules.unshift({ title: text.module, summary: text.summary, topics: [setup] });
 }
 
 /**

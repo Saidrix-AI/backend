@@ -19,6 +19,32 @@ const lecturePositionSchema = new Schema(
     courseId: { type: String, default: "" },
     blockIndex: { type: Number, default: 0, min: 0 },
     mode: { type: String, default: "lecture" },
+    /**
+     * Where they were in the TEACHING spine, for a v2 lecture: which concept,
+     * and how far through it.
+     *
+     * `blockIndex` alone cannot resume a conversational class. Coming back to
+     * the block the tutor happened to be showing loses whether that concept had
+     * been probed, explained or checked — so the student gets asked "do you know
+     * this?" about something they were mid-way through understanding. Both are
+     * stored: `blockIndex` still drives the page, and a v1 lecture leaves these
+     * empty and resumes exactly as it always did.
+     */
+    beatId: { type: String, default: "" },
+    beatPhase: { type: String, default: "" },
+    /**
+     * The current topic's opening-question result: concepts (beat ids) the
+     * student already knew / half knew. Without it a class resumed mid-topic
+     * would re-teach what they had just said they know.
+     */
+    knownBeats: { type: [String], default: [] },
+    partlyBeats: { type: [String], default: [] },
+    /**
+     * The tutor's own running notes on this class: what was taught, where the
+     * student struggled, what is still open. Written by the voice agent as the
+     * class goes and read back when the student returns to this lesson.
+     */
+    classNotes: { type: String, default: "", maxlength: 2000 },
   },
   { timestamps: true },
 );

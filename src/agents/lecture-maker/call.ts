@@ -1,6 +1,6 @@
 import { env } from "../../config/env.js";
 import { ApiError } from "../../utils/apiError.js";
-import { getOpenAICompatClient } from "../llm.js";
+import { getModelName, hasOpenAICompatProvider } from "../llm.js";
 import {
   runForcedToolCall as runSharedForcedToolCall,
   type ForcedToolCallOptions,
@@ -36,14 +36,16 @@ export type LectureRole = "classifier" | "analyst" | "planner" | "worker" | "svg
  * cheap-but-dull critic, not a broken one.
  */
 export function svgDefaultModel(provider: string): string {
-  return provider === "openrouter" ? "openai/gpt-5.6-luna" : "gpt-5.6-luna";
+  // Every gateway (openrouter, tokenrouter, vercel) wants the vendor prefix;
+  // only OpenAI itself takes the bare id.
+  return provider === "openai" ? "gpt-5.6-luna" : "openai/gpt-5.6-luna";
 }
 
 export function resolveLectureDeps(role: LectureRole): LlmDeps {
-  const oai = getOpenAICompatClient();
-  if (!oai) {
+  if (!hasOpenAICompatProvider()) {
     throw new ApiError(503, "Lecture generation needs an OpenAI-compatible LLM provider (openai or openrouter).");
   }
+  const fallback = getModelName();
   // The analyst is one short call whose output sets the quality ceiling for the
   // whole lecture, so it is the cheapest place to buy a stronger model —
   // LECTURE_ANALYST_MODEL exists for that, and falls back to LLM_MODEL.
@@ -52,20 +54,20 @@ export function resolveLectureDeps(role: LectureRole): LlmDeps {
       ? // A two-way sort with a written-out rule for each side. The default
         // model does it well, and it runs on every lesson — so it is the one
         // role where an upgrade is pure cost.
-        (env.LECTURE_CLASSIFIER_MODEL ?? oai.model)
+        (env.LECTURE_CLASSIFIER_MODEL ?? fallback)
       : role === "analyst"
-      ? (env.LECTURE_ANALYST_MODEL ?? oai.model)
+      ? (env.LECTURE_ANALYST_MODEL ?? fallback)
       : role === "planner"
-        ? (env.LECTURE_PLANNER_MODEL ?? oai.model)
+        ? (env.LECTURE_PLANNER_MODEL ?? fallback)
         : role === "worker"
-          ? (env.LECTURE_WORKER_MODEL ?? oai.model)
+          ? (env.LECTURE_WORKER_MODEL ?? fallback)
           : role === "resources"
             ? // Ranking a supplied list is the easiest job in the pipeline — it
               // cannot author a link, only choose among ours — so the default
               // model is ample and an upgrade buys nothing.
-              (env.LECTURE_RESOURCES_MODEL ?? oai.model)
+              (env.LECTURE_RESOURCES_MODEL ?? fallback)
             : (env.LECTURE_SVG_MODEL ?? svgDefaultModel(env.LLM_PROVIDER));
-  return { client: oai.client, model };
+  return { model };
 }
 
 /** `maxTokens` and `timeoutMs` may be overridden per role; the label is fixed. */

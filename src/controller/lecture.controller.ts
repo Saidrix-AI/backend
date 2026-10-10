@@ -2,6 +2,35 @@ import type { Request, Response } from "express";
 import * as assessmentService from "../services/assessment.service.js";
 import * as lectureService from "../services/lecture.service.js";
 import * as progressService from "../services/progress.service.js";
+import * as tutorSupport from "../services/tutorSupport.service.js";
+import { ApiError } from "../utils/apiError.js";
+
+/** The tutor's own routes: a student's login token gets nothing from them. */
+function assertVoiceAgent(req: Request): void {
+  if (req.authKind !== "voice-agent") throw new ApiError(403, "Only the classroom tutor may call this.");
+}
+
+export async function getTutorContext(req: Request, res: Response): Promise<void> {
+  assertVoiceAgent(req);
+  const data = await tutorSupport.getTutorContext(req.user!.id, req.params.lessonId as string);
+  res.json({ success: true, data });
+}
+
+export async function saveClassNotes(req: Request, res: Response): Promise<void> {
+  assertVoiceAgent(req);
+  await tutorSupport.saveClassNotes(req.user!.id, req.params.lessonId as string, (req.body as { notes: string }).notes);
+  res.json({ success: true, data: { message: "Notes saved" } });
+}
+
+export async function tutorWebSearch(req: Request, res: Response): Promise<void> {
+  assertVoiceAgent(req);
+  const text = await tutorSupport.tutorWebSearch(
+    req.user!.id,
+    req.params.lessonId as string,
+    (req.body as { query: string }).query,
+  );
+  res.json({ success: true, data: { text } });
+}
 
 export async function getLecture(req: Request, res: Response): Promise<void> {
   const lessonId = req.params.lessonId as string;
@@ -9,7 +38,12 @@ export async function getLecture(req: Request, res: Response): Promise<void> {
   // /classroom?lecture=… hits for an already-generated lecture, so without it
   // the active-course rule would only hold for the buttons in the UI.
   await lectureService.assertLessonEnterable(req.user!.id, lessonId);
-  const lecture = await lectureService.getLectureByLessonId(req.user!.id, lessonId);
+  // The tutor gets the full beats — the probe rubrics and teaching material it
+  // has to teach from. A browser gets them slimmed to id/topicId/concept, since
+  // a rubric the student can read is a rubric that measures nothing. See
+  // slimBeats in lecture.service.
+  const audience = req.authKind === "voice-agent" ? "tutor" : "student";
+  const lecture = await lectureService.getLectureByLessonId(req.user!.id, lessonId, audience);
   res.json({ success: true, data: lecture });
 }
 
@@ -99,15 +133,42 @@ export async function getPosition(req: Request, res: Response): Promise<void> {
 
 /** Durable checkpoint, written by the agent as narration moves and on leave. */
 export async function savePosition(req: Request, res: Response): Promise<void> {
-  const { blockIndex, mode, courseId } = req.body as {
+  const { blockIndex, mode, courseId, beatId, beatPhase, knownBeats, partlyBeats } = req.body as {
     blockIndex: number;
     mode?: string;
     courseId?: string;
+    beatId?: string;
+    beatPhase?: string;
+    knownBeats?: string[];
+    partlyBeats?: string[];
   };
   await lectureService.saveLecturePosition(req.user!.id, req.params.lessonId as string, {
     blockIndex,
     mode,
     courseId,
+    beatId,
+    beatPhase,
+    knownBeats,
+    partlyBeats,
   });
   res.json({ success: true, data: { message: "Position saved" } });
+}
+
+/** Whether the live tutor should start by asking or by teaching — see getLearnerSignal. */
+export async function getLearnerSignal(req: Request, res: Response): Promise<void> {
+  const signal = await lectureService.getLearnerSignal(req.user!.id, req.params.lessonId as string);
+  res.json({ success: true, data: signal });
+}
+
+/**
+ * What the tutor should point the student at on its way out: the next lesson,
+ * a quiz still waiting, any project this lesson just opened.
+ *
+ * Read once, at the end of a class. Agent-only in practice — a browser has all
+ * of this from the course detail endpoint already — but it sits behind the same
+ * ownership check as everything else on that router.
+ */
+export async function getNextUp(req: Request, res: Response): Promise<void> {
+  const next = await lectureService.getNextUp(req.user!.id, req.params.lessonId as string);
+  res.json({ success: true, data: next });
 }

@@ -58,10 +58,21 @@ export const proposeCoursesTool: OpenAI.Chat.ChatCompletionFunctionTool = {
   function: {
     name: "propose_courses",
     description:
-      "Show the student 1-5 proposed courses as an ordered, selectable learning path — rendered as a visual roadmap (Step 1 → Step 2 → …) so they can see what comes first and pick what to create. Call this INSTEAD of writing a course plan as text; the cards are the only way the student can select. Use it for EVERY learn request once the guided intake is complete: a broad career goal becomes 3-5 steps, a single topic becomes 1-3 steps, foundational first. Saves the ordered path and returns a pathId; creates no courses. After the student selects, create each chosen course with generate_course, passing that pathId and the course's order. Write all fields in the language the intake named.",
+      "Show the student their learning path as ordered, selectable course cards — rendered as a visual roadmap (Step 1 → Step 2 → …) so they can see what comes first and pick what to create. Call this INSTEAD of writing a course plan as text; the cards are the only way the student can select. Use it for EVERY learn request once the guided intake is complete.\n" +
+      "When the intake summary names a curriculum template, the SERVER fills the course list from it (one course for a language, exactly the roadmap's steps for a career); send your best list anyway, it is only used for the step labels.\n" +
+      "Otherwise decide `breadth`, which fixes how many courses the path has:\n" +
+      "- topic / subject: ONE skill, tool or field — 'Python', 'SQL', 'Git', 'Python for data analysis'. Exactly ONE course, never split into parts.\n" +
+      "- career: only when the student asked for a role or career path — 'become a web developer', 'Android developer'. 4-10 courses covering the WHOLE syllabus a working practitioner needs, each a distinct subject.\n" +
+      "Leave out subjects the student's profile says they already know. Saves the ordered path and returns a pathId; creates no courses. Write all fields in the language the intake named.",
     parameters: {
       type: "object",
       properties: {
+        breadth: {
+          type: "string",
+          enum: ["topic", "subject", "career"],
+          description:
+            "topic or subject = exactly 1 course; career = a role or career path the student asked for (4-10 courses, the full syllabus). Ignored when a curriculum template matched.",
+        },
         goal: {
           type: "string",
           description: "The overall goal this path leads to, e.g. 'Become a data scientist'. Shown as the path title.",
@@ -74,7 +85,7 @@ export const proposeCoursesTool: OpenAI.Chat.ChatCompletionFunctionTool = {
         courses: {
           type: "array",
           description:
-            "1-5 proposed courses STRICTLY in learning order, foundational first (a single narrow topic may be just one). Their `covers` scopes must NOT overlap — each course owns a distinct slice so nothing is taught twice across the path.",
+            "The path's courses STRICTLY in learning order, foundational first — as many as `breadth` says (topic/subject 1, career 4-10). Their `covers` scopes must NOT overlap — each course owns a distinct slice so nothing is taught twice across the path.",
           items: {
             type: "object",
             required: ["title", "objective", "covers", "theme"],
@@ -105,7 +116,32 @@ export const proposeCoursesTool: OpenAI.Chat.ChatCompletionFunctionTool = {
           },
         },
       },
-      required: ["goal", "courses"],
+      required: ["goal", "breadth", "courses"],
+    },
+  },
+};
+
+export const createPathCoursesTool: OpenAI.Chat.ChatCompletionFunctionTool = {
+  type: "function",
+  function: {
+    name: "create_path_courses",
+    description:
+      "Create the courses the student picked from a proposed learning path — ALL of them, in one call, in learning order. Call it when they reply 'Create these courses: …' after propose_courses. Pass the pathId propose_courses returned and the 1-based position of every chosen course. Takes about a minute per course; tell them you are building before the call. Courses beyond their plan's monthly limit are not created and stay on their path, where they can be created later from the Courses page.",
+    parameters: {
+      type: "object",
+      properties: {
+        pathId: {
+          type: "string",
+          description: "The pathId propose_courses returned, if you have it. Omit it to use the path you proposed most recently.",
+        },
+        orders: {
+          type: "array",
+          items: { type: "integer" },
+          description:
+            "The numbers of the courses they chose, as numbered in your proposal (1 = first course), e.g. [1, 2, 4]",
+        },
+      },
+      required: ["orders"],
     },
   },
 };

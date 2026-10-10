@@ -86,8 +86,12 @@ function splitBody(body: string): string[] {
  * Chunks one curriculum markdown file. `sourcePath` should be a stable,
  * repo-relative path (used both as metadata and to derive the id in ingestion).
  */
-export function chunkFile(markdown: string, sourcePath: string): Chunk[] {
-  const { category, categoryNumber } = categoryFromPath(sourcePath);
+export function chunkFile(
+  markdown: string,
+  sourcePath: string,
+  meta?: { category: string; categoryNumber: number },
+): Chunk[] {
+  const { category, categoryNumber } = meta ?? categoryFromPath(sourcePath);
   const skill = skillFromMarkdown(markdown, sourcePath);
 
   const segments: { section: string; level: Level; body: string }[] = [];
@@ -136,6 +140,36 @@ export function chunkFile(markdown: string, sourcePath: string): Chunk[] {
     }
   }
   return chunks;
+}
+
+/**
+ * Joins neighbouring chunks of one file until each holds at least `minChars`.
+ * The lesson PDFs split into many heading-only or one-row sections — a chunk
+ * that is just "## Tools and setup" retrieves on the heading and answers
+ * nothing. Keeps the first piece's section and level; renumbers chunkIndex.
+ */
+export function mergeSmallChunks(chunks: Chunk[], minChars = 1200): Chunk[] {
+  const out: Chunk[] = [];
+  for (const c of chunks) {
+    const last = out[out.length - 1];
+    if (
+      last &&
+      last.sourcePath === c.sourcePath &&
+      last.text.length < minChars &&
+      last.text.length + c.text.length + 2 <= MAX_CHARS
+    ) {
+      last.text = `${last.text}\n\n${c.text}`;
+    } else {
+      out.push({ ...c });
+    }
+  }
+  const index = new Map<string, number>();
+  for (const c of out) {
+    const n = index.get(c.sourcePath) ?? 0;
+    c.chunkIndex = n;
+    index.set(c.sourcePath, n + 1);
+  }
+  return out;
 }
 
 /** Stable id for a chunk (path + position) so re-ingesting is idempotent. */

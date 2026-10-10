@@ -59,6 +59,22 @@ const courseSchema = new Schema(
     userId: { type: Types.ObjectId, ref: "User", required: true, index: true },
     title: { type: String, required: true, trim: true },
     desc: { type: String, trim: true, default: "" },
+    /**
+     * Why a student would take this course at all — the problem it solves for
+     * them, not a restatement of the syllabus.
+     *
+     * Separate from `desc` because they answer different questions and get read
+     * in different places: `desc` is the one-line card blurb, this is the "is
+     * this for me?" paragraph on the course page. Blending them gave cards a
+     * paragraph and the page a blurb.
+     */
+    whyTake: { type: String, trim: true, default: "" },
+    /**
+     * What the student can DO at the end — one line per capability, phrased as
+     * an action. Chapters already carry their own `outcomes`; these are the
+     * course-level few that survive a chapter being reordered or rewritten.
+     */
+    outcomes: { type: [String], default: [] },
     level: {
       type: String,
       enum: ["Beginner", "Intermediate", "Advanced"],

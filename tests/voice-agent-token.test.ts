@@ -58,9 +58,24 @@ beforeAll(async () => {
 
   await LectureModel.create({
     lessonId,
+    version: 3,
     title: "Spoken Lecture",
     outline: [],
-    blocks: [{ id: "b1", type: "paragraph", text: "Narrate me." }],
+    sections: [
+      {
+        id: "t1b1",
+        topicId: 1,
+        title: "variables",
+        kind: "theory",
+        blocks: [{ id: "b1", type: "paragraph", text: "Narrate me." }],
+        tutor: {
+          goal: "can name a value",
+          explain: ["a name points at a value"],
+          ask: { question: "know this?", expectedPoints: ["a variable binds a name to a value"], worth: "ask" },
+          check: { mustShow: "explains binding without being prompted", mode: "verbal" },
+        },
+      },
+    ],
   });
 });
 
@@ -103,6 +118,62 @@ describe("what a voice-agent token can reach", () => {
       .set(asAgent())
       .send({ courseId, lessonId });
     expect(res.status).toBe(200);
+  });
+
+  it("reads what comes after the lesson, for its goodbye", async () => {
+    const res = await request(app).get(`/api/lectures/${lessonId}/next`).set(asAgent());
+    expect(res.status).toBe(200);
+    // One topic in the fixture, so there is nothing after it — and the tutor
+    // has to be able to say that rather than invent a next lesson.
+    expect(res.body.data).toMatchObject({ nextLessonId: "", nextLessonTitle: "" });
+  });
+});
+
+/**
+ * The tutor gets the whole teaching spine; the browser gets three fields of it.
+ *
+ * `probe.expectedPoints` and `checkpoint.mustShow` are the rubrics a spoken
+ * answer is marked against. A student who opened the network tab could read
+ * back exactly what counts as understanding, and the probe would then measure
+ * nothing at all — it is the tutor's only instrument for finding out where to
+ * start, and an instrument whose answers are visible reports confidence that
+ * was never there.
+ */
+describe("who sees the marking rubrics", () => {
+  it("gives the tutor the full beats", async () => {
+    const res = await request(app).get(`/api/lectures/${lessonId}`).set(asAgent());
+    const beat = res.body.data.beats[0];
+    expect(beat.probe.expectedPoints).toEqual(["a variable binds a name to a value"]);
+    expect(beat.checkpoint.mustShow).toBe("explains binding without being prompted");
+    expect(beat.teach.plain.points).toHaveLength(1);
+  });
+
+  it("gives the browser only enough to label the concept", async () => {
+    const res = await request(app).get(`/api/lectures/${lessonId}`).set(asUser());
+    expect(res.body.data.beats).toEqual([{ id: "t1b1", topicId: 1, concept: "variables", kind: "theory" }]);
+    expect(JSON.stringify(res.body)).not.toContain("explains binding");
+  });
+});
+
+describe("the tutor's memory of a class", () => {
+  it("starts empty, keeps what the tutor writes, and reads it back with the student context", async () => {
+    const first = await request(app).get(`/api/lectures/${lessonId}/tutor-context`).set(asAgent());
+    expect(first.status).toBe(200);
+    expect(first.body.data.classNotes).toBe("");
+    const save = await request(app)
+      .put(`/api/lectures/${lessonId}/class-notes`)
+      .set(asAgent())
+      .send({ notes: "Taught for loops; struggled with range end." });
+    expect(save.status).toBe(200);
+    const again = await request(app).get(`/api/lectures/${lessonId}/tutor-context`).set(asAgent());
+    expect(again.body.data.classNotes).toBe("Taught for loops; struggled with range end.");
+  });
+
+  it("is the tutor's alone — a student's own token is refused", async () => {
+    const res = await request(app).get(`/api/lectures/${lessonId}/tutor-context`).set(asUser());
+    expect(res.status).toBe(403);
+    const search = await request(app).post(`/api/lectures/${lessonId}/web-search`).set(asUser()).send({ query: "python 3.13" });
+    expect(search.status).toBe(403);
   });
 });
 

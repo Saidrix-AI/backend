@@ -89,6 +89,16 @@ const envSchema = z.object({
   LIVEKIT_API_KEY: z.string().default("devkey"),
   LIVEKIT_API_SECRET: z.string().default("secret"),
 
+  // How many students may be in a live class at once.
+  //
+  // Set by the SPEECH plan, not by LiveKit: Cartesia bills simultaneous
+  // requests, and past the limit it rejects the synthesis — which reaches the
+  // student as a tutor that joins and then says nothing. Refusing with a 429
+  // the classroom can explain is better than that in every way.
+  //
+  // Defaults to the Scale plan's 15. 0 disables the check.
+  VOICE_MAX_CONCURRENT_SESSIONS: z.coerce.number().int().min(0).default(15),
+
   // The secret the voice agent signs its own service tokens with.
   //
   // The agent mints a token on behalf of whichever student is in the room, so
@@ -100,17 +110,38 @@ const envSchema = z.object({
   VOICE_SERVICE_SECRET: z.preprocess((v) => v || undefined, z.string().min(32).optional()),
 
   // --- LLM providers ---
-  LLM_PROVIDER: z.enum(["anthropic", "openai", "google", "openrouter", "tokenrouter"]).default("openrouter"),
+  LLM_PROVIDER: z
+    .enum(["anthropic", "openai", "google", "openrouter", "tokenrouter", "vercel"])
+    .default("openrouter"),
   LLM_MODEL: z.string().optional(),
   // Escape hatch for the reasoning-effort rule in agents/llm.ts. Leave unset:
   // the default is derived from the model name. Set it when a new model needs a
   // different value than the derivation picks (see reasoningParams there).
-  LLM_REASONING_EFFORT: z.enum(["none", "low", "medium", "high", "xhigh"]).optional(),
+  LLM_REASONING_EFFORT: z.preprocess(
+    (v) => v || undefined,
+    z.enum(["none", "low", "medium", "high", "xhigh"]).optional(),
+  ),
   // Per-LLM-call timeout for forced tool calls. Reasoning models (e.g.
   // z-ai/glm-5.2) think before answering and are far slower than instruct
   // models — 60s was enough for gpt-4o-mini but times out the lecture planner
   // and project planner on a reasoning model. Raise this if calls still time out.
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
+  // Throttles for the LLM fan-out, enforced in agents/shared/llmGate.ts. Both
+  // default to 0 = unlimited, so a provider with headroom is untouched. Set
+  // them when the provider caps you: generation issues ~70 calls per lecture,
+  // many in parallel, and without a gate every call past the cap 429s and the
+  // whole job is discarded. LLM_REQUESTS_PER_MINUTE should be set to the
+  // provider's actual per-minute allowance, not an optimistic guess — a 429
+  // costs the same quota as a success on gateways that count failed attempts.
+  LLM_MAX_CONCURRENCY: z.coerce.number().int().min(0).default(0),
+  LLM_REQUESTS_PER_MINUTE: z.coerce.number().int().min(0).default(0),
+  // Last resort for the generation agents when LLM_MODEL keeps failing with
+  // transient provider errors — see runForcedToolCall. Unset (the default)
+  // means no fallback and the failure surfaces as it always did. Point it at a
+  // model on a DIFFERENT reliability footing than LLM_MODEL, or it buys
+  // nothing: the case this exists for is a free tier shedding load while the
+  // paid model on the same key answers fine.
+  LLM_FALLBACK_MODEL: z.string().optional(),
   // Overrides LLM_MODEL for the Course-maker agent's outline call only.
   COURSE_MAKER_MODEL: z.string().optional(),
   // Course-maker second phase: one call per chapter writes that chapter's
@@ -201,6 +232,8 @@ const envSchema = z.object({
   GOOGLE_API_KEY: z.string().optional(),
   OPENROUTER_API_KEY: z.string().optional(),
   TOKENROUTER_API_KEY: z.string().optional(),
+  // Vercel AI Gateway (LLM_PROVIDER=vercel). Same name Vercel's own SDKs read.
+  AI_GATEWAY_API_KEY: z.string().optional(),
   TAVILY_API_KEY: z.preprocess((v) => v || undefined, z.string().optional()),
 
   // --- Freshness (live web search folded into generation) ---
@@ -220,6 +253,36 @@ const envSchema = z.object({
   // generation fires one search for the outline plus one per chapter on closely
   // related queries; "latest" does not change within a single generation.
   AGENT_FRESHNESS_CACHE_MINUTES: z.coerce.number().int().min(0).default(60),
+
+  // --- Remote code runner (Judge0) ---
+  //
+  // The classroom runs Python and JavaScript in the student's own browser, for
+  // free and with no round trip. This covers everything else — the ~30 other
+  // languages in the curriculum that a browser cannot host: C, C++, Java, Go,
+  // Rust, Ruby, PHP, Kotlin and the rest.
+  //
+  // Deliberately proxied through this backend rather than called from the
+  // browser: the key would otherwise be in the page source, and the per-user
+  // rate limit has to live somewhere the student cannot edit.
+  //
+  // Unset = the remote lane is simply off, and the tutor is told it may only
+  // demonstrate Python and JavaScript. That is a real, supported configuration:
+  // the browser lane needs nothing.
+  JUDGE0_URL: z.preprocess((v) => v || undefined, z.string().url().optional()),
+  JUDGE0_API_KEY: z.preprocess((v) => v || undefined, z.string().optional()),
+  // RapidAPI sends the key as x-rapidapi-key plus an x-rapidapi-host header. A
+  // self-hosted Judge0 wants neither — leave both blank there.
+  JUDGE0_API_HOST: z.preprocess((v) => v || undefined, z.string().optional()),
+  // Seconds of CPU a submission may burn. Teaching demos finish in well under
+  // one; this is the ceiling that stops an accidental infinite loop from
+  // occupying a worker.
+  JUDGE0_CPU_LIMIT_S: z.coerce.number().min(1).max(15).default(5),
+  // Wall-clock seconds, which also covers compilation — a cold C++ or Java
+  // compile is most of the time a student waits.
+  JUDGE0_WALL_LIMIT_S: z.coerce.number().min(2).max(30).default(15),
+  JUDGE0_MEMORY_LIMIT_KB: z.coerce.number().int().min(16000).max(512000).default(128000),
+  // How long the backend itself waits before giving up on the whole exchange.
+  JUDGE0_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 
   // --- RAG knowledge base (Course-Content curriculum) ---
   // Pinecone vector DB. Without PINECONE_API_KEY the whole RAG layer is off:
@@ -364,6 +427,18 @@ export const ragConfig = {
   embeddingDimensions: env.EMBEDDING_DIMENSIONS,
   topK: env.RAG_TOP_K,
 } as const;
+
+/**
+ * Whether the remote code runner is configured.
+ *
+ * A URL is the whole requirement: a self-hosted Judge0 needs no key, and a
+ * hosted one supplies it separately. False is a supported state, not a
+ * misconfiguration — the classroom keeps its browser lane and the voice agent
+ * is told it may only demonstrate Python and JavaScript.
+ */
+export function isCodeRunnerEnabled(): boolean {
+  return Boolean(env.JUDGE0_URL);
+}
 
 /**
  * RAG is usable only when Pinecone auth, an embedding model + its dimensions,

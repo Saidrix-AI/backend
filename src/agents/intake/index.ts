@@ -1,6 +1,6 @@
 import { env } from "../../config/env.js";
 import { DEFAULT_LANGUAGE, type Language } from "../../validation/language.js";
-import { getOpenAICompatClient } from "../llm.js";
+import { getModelName, hasOpenAICompatProvider } from "../llm.js";
 import { formatZodIssues, runForcedToolCall, type LlmDeps } from "../shared/forcedToolCall.js";
 import { buildPlanSystemPrompt, buildPlanUserMessage } from "./prompt.js";
 import {
@@ -15,7 +15,7 @@ import {
 export type { IntakeQuestion, IntakePlan, TopicKind } from "./schema.js";
 export { GOAL_QUESTION_COUNT, TOPIC_KINDS } from "./schema.js";
 
-const MAX_OUTPUT_TOKENS = 1024;
+const MAX_OUTPUT_TOKENS = 2048;
 
 /**
  * Used when the model is unavailable or emits something unusable. The intake is
@@ -71,9 +71,8 @@ export function guessTopicShape(text: string): { topicKind: TopicKind; needsLoca
 }
 
 function resolveIntakeDeps(): LlmDeps | null {
-  const oai = getOpenAICompatClient();
-  if (!oai) return null;
-  return { client: oai.client, model: env.ASSESSMENT_MODEL ?? env.COURSE_MAKER_MODEL ?? oai.model };
+  if (!hasOpenAICompatProvider()) return null;
+  return { model: env.ASSESSMENT_MODEL ?? env.COURSE_MAKER_MODEL ?? getModelName() };
 }
 
 /**
@@ -83,17 +82,30 @@ function resolveIntakeDeps(): LlmDeps | null {
  * classify anything at all.
  */
 export async function generateIntakePlan(
-  ctx: { topic: string; objective: string; language?: Language },
+  ctx: {
+    topic: string;
+    objective: string;
+    language?: Language;
+    /**
+     * The matched curriculum template, or fresh web results when none
+     * matched. The questions are written from it, not from memory.
+     */
+    reference?: string;
+  },
   deps?: LlmDeps,
 ): Promise<IntakePlan> {
   const fallback = (): IntakePlan => ({
     ...guessTopicShape(`${ctx.topic} ${ctx.objective}`),
     goalQuestion: FALLBACK_GOAL_QUESTION,
     backgroundQuestion: FALLBACK_BACKGROUND_QUESTION,
+    extraQuestions: [],
   });
 
   const resolved = deps ?? resolveIntakeDeps();
-  if (!resolved) return fallback();
+  if (!resolved) {
+    console.warn("[intake] no LLM provider; using the fixed intake questions");
+    return fallback();
+  }
 
   try {
     return await runForcedToolCall({
@@ -104,6 +116,7 @@ export async function generateIntakePlan(
         topic: ctx.topic,
         objective: ctx.objective,
         language: ctx.language ?? DEFAULT_LANGUAGE,
+        ...(ctx.reference ? { reference: ctx.reference } : {}),
       }),
       parse: (raw) => {
         const r = intakePlanSchema.safeParse(normalizePlan(raw));
@@ -115,7 +128,8 @@ export async function generateIntakePlan(
       maxTokens: MAX_OUTPUT_TOKENS,
       label: "Intake plan",
     });
-  } catch {
+  } catch (err) {
+    console.warn("[intake] plan call failed; using the fixed intake questions:", err instanceof Error ? err.message : err);
     return fallback();
   }
 }

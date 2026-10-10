@@ -38,9 +38,9 @@ function cannedLecture(): MadeLecture {
       { id: 1, title: "Why loops", duration: "3:00" },
       { id: 2, title: "for loops", duration: "4:30" },
     ],
-    blocks: [
-      { id: "b1", type: "heading", topicId: 1, text: "Why loops" },
-      { id: "b2", type: "paragraph", topicId: 2, text: "Loops repeat work for you." },
+    sections: [
+      { id: "s1", topicId: 1, title: "Why loops", kind: "theory", blocks: [{ id: "b1", type: "paragraph", text: "Why loops" }] },
+      { id: "s2", topicId: 2, title: "for loops", kind: "theory", blocks: [{ id: "b2", type: "paragraph", text: "Loops repeat work for you." }] },
     ],
   };
 }
@@ -130,7 +130,7 @@ describe("POST /api/lectures/:lessonId/generate", () => {
 
     const doc = await LectureModel.findOne({ lessonId: LESSON }).lean();
     expect(doc).not.toBeNull();
-    expect(doc!.version).toBe(1);
+    expect(doc!.version).toBe(3);
     expect(doc!.language).toBe("en");
   });
 
