@@ -126,6 +126,19 @@ const envSchema = z.object({
   // models — 60s was enough for gpt-4o-mini but times out the lecture planner
   // and project planner on a reasoning model. Raise this if calls still time out.
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
+  // Throttles for the LLM fan-out, enforced in agents/shared/llmGate.ts.
+  // Requests per minute defaults to 30 (the app's own cap, no env needed);
+  // concurrency defaults to 0 = unlimited. 0 for either means no cap. Why a cap: generation issues ~70 calls per lecture,
+  // many in parallel, and without a gate every call past the cap 429s and the
+  // whole job is discarded. LLM_REQUESTS_PER_MINUTE should be set to the
+  // provider's actual per-minute allowance, not an optimistic guess — a 429
+  // costs the same quota as a success on gateways that count failed attempts.
+  // Blank counts as unset: z.coerce would read "" as 0 and silently lift the cap.
+  LLM_MAX_CONCURRENCY: z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().int().min(0).default(0)),
+  LLM_REQUESTS_PER_MINUTE: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.coerce.number().int().min(0).default(30),
+  ),
   // Last resort for the generation agents when LLM_MODEL keeps failing with
   // transient provider errors — see runForcedToolCall. Unset (the default)
   // means no fallback and the failure surfaces as it always did. Point it at a
