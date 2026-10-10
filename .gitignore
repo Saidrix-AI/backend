@@ -11,3 +11,6 @@ coverage/
 
 # Diagram E2E script artefacts (scripts/svg-e2e.ts)
 scripts/.e2e-out.*
+
+# Generated knowledge graph and worker logs — local only
+graphify-out/
