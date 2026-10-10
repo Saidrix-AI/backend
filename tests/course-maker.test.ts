@@ -487,6 +487,35 @@ describe("multi-course learning path coordination", () => {
   });
 });
 
+describe("create_path_courses", () => {
+  const onePath = [{ title: "Python Basics", objective: "Python from zero", covers: "syntax" }];
+
+  it("falls back to the latest path when the model passes a pathId that does not exist", async () => {
+    await LearningPathModel.deleteMany({});
+    await run("propose_courses", { goal: "Python", breadth: "topic", courses: onePath });
+    mockGenerate.mockImplementation(async () => ({ ...cannedPayload(), title: "Python Basics" }));
+    const out = await run("create_path_courses", { pathId: new Types.ObjectId().toString(), orders: [1] });
+    expect(out.ok).toBe(true);
+  });
+
+  it("reads an out-of-range step on a one-course path as that course", async () => {
+    await LearningPathModel.deleteMany({});
+    await run("propose_courses", { goal: "Python", breadth: "topic", courses: onePath });
+    mockGenerate.mockImplementation(async () => ({ ...cannedPayload(), title: "Python Basics B" }));
+    const out = await run("create_path_courses", { orders: [2] });
+    expect(out.ok).toBe(true);
+  });
+
+  it("puts the failure reason in the label the student sees", async () => {
+    await LearningPathModel.deleteMany({});
+    await run("propose_courses", { goal: "Python", breadth: "topic", courses: onePath });
+    mockGenerate.mockRejectedValueOnce(new ApiError(502, "the model did not answer"));
+    const out = await run("create_path_courses", { orders: [1] });
+    expect(out.ok).toBe(false);
+    expect(out.label).toBe("Couldn't create courses: the model did not answer");
+  });
+});
+
 describe("existing-course dedup", () => {
   it("passes the student's other courses' coverage to the outline as a do-not-duplicate boundary", async () => {
     mockGenerate.mockImplementation(async () => cannedPayload());
