@@ -51,6 +51,32 @@ interface MessageAction {
   changed?: string;
 }
 
+/** One line of the activity timeline, persisted so a reload can replay it. */
+interface MessageStep {
+  label: string;
+  ok: boolean;
+}
+
+/** How the turn was carried out, beyond its answer: the timeline and time to answer. */
+interface TurnTrace {
+  steps: MessageStep[];
+  durationMs: number;
+}
+
+/**
+ * The timeline line a finished event leaves behind, or null for events that are
+ * not a step. The two plumbing tools get fixed wording here, matching what the
+ * client shows live: their own result labels ("Curriculum search complete",
+ * "Web search complete") are written for logs, not for a student.
+ */
+function stepFor(ev: AgentStreamEvent): MessageStep | null {
+  if (ev.type === "status") return ev.state === "done" ? { label: ev.label, ok: true } : null;
+  if (ev.type !== "tool_result") return null;
+  if (ev.name === SEARCH_COURSE_CONTENT_TOOL_NAME) return { label: "Checked course material", ok: true };
+  if (ev.name === "web_search") return { label: ev.ok ? "Searched the web" : "Web search failed", ok: ev.ok };
+  return { label: ev.label, ok: ev.ok };
+}
+
 /** Strips text-attachment content before persisting — only used for that turn's context. */
 function attachmentMetadata(attachments: InputAttachment[] = []) {
   if (attachments.length === 0) return undefined;
@@ -145,6 +171,16 @@ export async function* streamMessage(
   let reasoning = "";
   const sources: SearchSource[] = [];
   const actions: MessageAction[] = [];
+  const steps: MessageStep[] = [];
+  // "Worked for 4s" means time spent before answering: start → first answer
+  // token, or the whole turn when no answer text came. The client times a live
+  // turn the same way, so a reload shows the number the student already saw.
+  const startedAt = Date.now();
+  let answerStartedAt: number | undefined;
+  const trace = (): TurnTrace => ({
+    steps,
+    durationMs: (answerStartedAt ?? Date.now()) - startedAt,
+  });
   let proposal: ProposedCourse[] | undefined;
   let questions: AskQuestion[] | undefined;
   let assessment: AssessmentStart | undefined;
@@ -164,9 +200,13 @@ export async function* streamMessage(
       userId,
       learnerContext,
     })) {
+      const step = stepFor(ev);
+      if (step) steps.push(step);
       if (ev.type === "thinking") reasoning += ev.delta;
-      else if (ev.type === "content") content += ev.delta;
-      else if (ev.type === "sources") sources.push(...ev.sources);
+      else if (ev.type === "content") {
+        content += ev.delta;
+        answerStartedAt ??= Date.now();
+      } else if (ev.type === "sources") sources.push(...ev.sources);
       else if (ev.type === "course_proposal") proposal = ev.courses;
       else if (ev.type === "ask_questions") questions = ev.questions;
       else if (ev.type === "assessment") assessment = ev.assessment;
@@ -197,6 +237,7 @@ export async function* streamMessage(
           assessment,
           intake,
           options.attachments,
+          trace(),
         );
       }
       return;
@@ -227,6 +268,7 @@ export async function* streamMessage(
     assessment,
     intake,
     options.attachments,
+    trace(),
   );
   yield { type: "done", conversationId: conversation.id };
 }
@@ -301,6 +343,7 @@ async function persistTurn(
   assessment?: AssessmentStart,
   intake?: IntakeStart,
   attachments?: InputAttachment[],
+  trace?: TurnTrace,
 ) {
   conversation.messages.push(
     { role: "user", content: message, attachments: attachmentMetadata(attachments) },
@@ -310,6 +353,8 @@ async function persistTurn(
       reasoning: reasoning || undefined,
       sources: sources.length ? sources.map((s) => ({ title: s.title, url: s.url })) : undefined,
       actions: actions.length ? actions : undefined,
+      steps: trace?.steps.length ? trace.steps : undefined,
+      durationMs: trace?.durationMs,
       proposal: proposal?.length ? proposal : undefined,
       questions: questions?.length ? questions : undefined,
       assessment: assessment ?? undefined,
