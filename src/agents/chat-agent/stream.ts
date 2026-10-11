@@ -51,6 +51,13 @@ export type AgentStreamEvent =
       label: string;
       changed?: "course" | "project" | "routine";
     }
+  /**
+   * Work the agent does that is neither a tool nor answer text — today only the
+   * intent router. Without it the student watched an empty "Thinking…" for the
+   * whole classification round-trip, since the chat model streams no reasoning
+   * (reasoning_effort is "none" on gpt-5.x, see llm.ts reasoningParams).
+   */
+  | { type: "status"; id: string; label: string; state: "running" | "done" }
   | { type: "sources"; sources: SearchSource[] }
   | { type: "course_proposal"; id: string; courses: ProposedCourse[] }
   | { type: "ask_questions"; id: string; questions: AskQuestion[] }
@@ -248,9 +255,12 @@ export async function* streamChatAgent(
       const router = getChatModelFor(env.COURSE_MAKER_MODEL ?? model, ROUTER_MAX_TOKENS, {
         temperature: 0,
       });
-      const route = router
-        ? await classifyCourseIntent(router, history, userMessage, options.signal)
-        : null;
+      let route: Awaited<ReturnType<typeof classifyCourseIntent>> = null;
+      if (router) {
+        yield { type: "status", id: "route", label: "Understanding your question", state: "running" };
+        route = await classifyCourseIntent(router, history, userMessage, options.signal);
+        yield { type: "status", id: "route", label: "Understood your question", state: "done" };
+      }
       if (route) forcedTool = forcedToolFor(route, historyHasProposal(history));
     }
     if (forcedTool && !toolset.has(forcedTool)) forcedTool = null;

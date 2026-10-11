@@ -33,6 +33,17 @@ const actionSchema = new Schema(
   { _id: false },
 );
 
+// One line of the "what the tutor did" timeline above an answer (routing, a
+// search, a tool), kept so a reloaded conversation can still show
+// "Worked for 4s · 3 steps" and expand it.
+const stepSchema = new Schema(
+  {
+    label: { type: String, required: true },
+    ok: { type: Boolean, required: true },
+  },
+  { _id: false },
+);
+
 // A multi-course proposal shown in this turn as selectable cards, kept so the
 // cards can be re-rendered (and re-selected if still newest) when a
 // conversation is reloaded.
@@ -100,6 +111,9 @@ const messageSchema = new Schema(
     sources: { type: [sourceSchema], default: undefined },
     attachments: { type: [attachmentSchema], default: undefined },
     actions: { type: [actionSchema], default: undefined },
+    steps: { type: [stepSchema], default: undefined },
+    // Time the tutor spent before answering: turn start → first answer token.
+    durationMs: { type: Number },
     proposal: { type: [proposedCourseSchema], default: undefined },
     questions: { type: [askQuestionSchema], default: undefined },
     assessment: { type: assessmentStartSchema, default: undefined },
