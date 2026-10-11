@@ -99,6 +99,12 @@ describe("math block", () => {
 // Verified against a real Mermaid parser in Chromium: the two failing cases
 // below parse after fixing, and every untouched case parsed before and after.
 describe("fixMermaidCode", () => {
+  it("quotes a path label that would open the parallelogram shape, and keeps a real one", () => {
+    const out = fixMermaidCode("flowchart TD\n  A[/api/users] --> B[/Input/]");
+    expect(out).toContain('A["/api/users"]');
+    expect(out).toContain("B[/Input/]");
+  });
+
   it("quotes a label whose parentheses break the parser", () => {
     expect(fixMermaidCode("flowchart TD\n  A[Start] --> B[range(n)]")).toContain('B["range(n)"]');
     expect(fixMermaidCode("flowchart TD\n  A[Start Loop] --> B[range(start, stop)]")).toContain(

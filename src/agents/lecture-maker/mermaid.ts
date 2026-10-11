@@ -19,6 +19,9 @@ import type { EasyBlock } from "./schema.js";
 // error, and cost a live class its diagram (block b13, 2026-09-29). Quoting the
 // label turns the inner quotes into single quotes, which render as written.
 const NEEDS_QUOTING = /[(){}[\]<>|;"]/;
+// `A[/api/users]` opens the parallelogram shape `[/…/]` and never closes it — a
+// parse error for any label that is a path or a URL. A real `[/Input/]` closes.
+const OPENS_SHAPE = /^[/\\](?!.*[/\\]$)/;
 
 // A double-quoted label, allowing the backslash-escaped quote a model writes
 // when it is thinking in JSON. Everything outside is structure and untouched.
@@ -44,7 +47,7 @@ export function fixMermaidCode(code: string): string {
   const quote = (id: string, open: string, close: string, label: string) => {
     const trimmed = label.trim();
     if (!trimmed || (trimmed.startsWith('"') && trimmed.endsWith('"'))) return `${id}${open}${label}${close}`;
-    if (!NEEDS_QUOTING.test(trimmed)) return `${id}${open}${label}${close}`;
+    if (!NEEDS_QUOTING.test(trimmed) && !OPENS_SHAPE.test(trimmed)) return `${id}${open}${label}${close}`;
     return `${id}${open}"${trimmed.replace(/"/g, "'")}"${close}`;
   };
   const quoted = code
